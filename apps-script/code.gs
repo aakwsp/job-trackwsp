@@ -114,7 +114,7 @@ function doPost(e) {
         row[col.job_key] = key;
         row[col.first_seen] = d;
         row[col.last_seen] = d;
-        row[col.applied] = false;
+        row[col.applied] = p.applied === true;
         sh.appendRow(row);
         index.set(key, sh.getLastRow());
         inserted.push(key);
