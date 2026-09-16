@@ -104,6 +104,7 @@ function doPost(e) {
           }
         }
         row[col.last_seen] = d;
+        range.setNumberFormat('@');
         range.setValues([row]);
         updated.push(key);
       } else {
@@ -116,7 +117,9 @@ function doPost(e) {
         row[col.last_seen] = d;
         row[col.applied] = p.applied === true;
         if ('source' in col) row[col.source] = p.source ?? '';
-        sh.appendRow(row);
+        const target = sh.getRange(sh.getLastRow() + 1, 1, 1, row.length);
+        target.setNumberFormat('@');
+        target.setValues([row]);
         index.set(key, sh.getLastRow());
         inserted.push(key);
       }
