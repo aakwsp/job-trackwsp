@@ -47,6 +47,8 @@ TOKEN: {TOKEN}
 
 Use your code/bash tool for HTTP requests and follow redirects (`curl -sL`). Don't use `-X POST`; a body sent with `-d` is enough.
 
+Responses sometimes come back as an HTML error page instead of JSON. If a response does not parse as JSON, wait 10 seconds and retry, up to 3 attempts. Retrying a POST is safe (writes are deduplicated). Only report a failure after all 3 attempts fail.
+
 ### Load known postings (before searching)
 GET `{URL}?token={TOKEN}`. The response is `{"postings":[...]}`, with job_key, company, title, city, req_id, url, deadline, posting_status, borderline, borderline_reason, applied, source.
 
