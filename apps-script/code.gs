@@ -7,7 +7,7 @@ const HEADERS = [
   'deadline', 'posting_status', 'borderline', 'borderline_reason',
   'first_seen', 'last_seen',
   'applied', 'applied_date', 'notes',
-  'imported_at',
+  'imported_at', 'source',
 ];
 const SCHEDULER_COLS = [
   'company', 'title', 'city', 'req_id', 'url',
@@ -104,6 +104,7 @@ function doPost(e) {
           }
         }
         row[col.last_seen] = d;
+        range.setNumberFormat('@');
         range.setValues([row]);
         updated.push(key);
       } else {
@@ -115,7 +116,10 @@ function doPost(e) {
         row[col.first_seen] = d;
         row[col.last_seen] = d;
         row[col.applied] = p.applied === true;
-        sh.appendRow(row);
+        if ('source' in col) row[col.source] = p.source ?? '';
+        const target = sh.getRange(sh.getLastRow() + 1, 1, 1, row.length);
+        target.setNumberFormat('@');
+        target.setValues([row]);
         index.set(key, sh.getLastRow());
         inserted.push(key);
       }
