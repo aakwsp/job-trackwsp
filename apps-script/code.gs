@@ -7,7 +7,7 @@ const HEADERS = [
   'deadline', 'posting_status', 'borderline', 'borderline_reason',
   'first_seen', 'last_seen',
   'applied', 'applied_date', 'notes',
-  'imported_at',
+  'imported_at', 'source',
 ];
 const SCHEDULER_COLS = [
   'company', 'title', 'city', 'req_id', 'url',
@@ -115,6 +115,7 @@ function doPost(e) {
         row[col.first_seen] = d;
         row[col.last_seen] = d;
         row[col.applied] = p.applied === true;
+        if ('source' in col) row[col.source] = p.source ?? '';
         sh.appendRow(row);
         index.set(key, sh.getLastRow());
         inserted.push(key);
