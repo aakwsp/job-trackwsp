@@ -1,0 +1,119 @@
+@import "tailwindcss";
+
+/* ── color tokens ──────────────────────────────────────
+   Base values are copied from aaq-portfolio/src/index.css so the
+   tracker and the portfolio stay visually identical. The status
+   colors below are additions for this app.
+   ─────────────────────────────────────────────────────── */
+:root,
+[data-theme="dark"] {
+  /* from the portfolio */
+  --bg:         #141216;
+  --bg-card:    #27232b;
+  --text:       #d8cab8;
+  --text-muted: #8a7e8e;
+  --text-dim:   #504856;
+  --rule:       #211e26;
+  --gap:        #1a171e;
+
+  /* tracker additions */
+  --bg-hover:   #18161c;  /* row/cell hover */
+  --rule-strong:#2e2a36;  /* section bands */
+
+  /* status markers — 3px left edge on a row */
+  --status-closing:    #f2bdc9;  /* deadline within 7 days */
+  --status-borderline: #b8c8f0;  /* spans into summer / fall 2027 start / other */
+  --status-applied:    #b8dcc8;  /* applied */
+  --status-stale:      #c8c0a8;  /* not seen in the last few runs */
+}
+
+@theme {
+  --color-bg:            var(--bg);
+  --color-bg-card:       var(--bg-card);
+  --color-bg-hover:      var(--bg-hover);
+  --color-text:          var(--text);
+  --color-text-muted:    var(--text-muted);
+  --color-text-dim:      var(--text-dim);
+  --color-rule:          var(--rule);
+  --color-rule-strong:   var(--rule-strong);
+  --color-closing:       var(--status-closing);
+  --color-borderline:    var(--status-borderline);
+  --color-applied:       var(--status-applied);
+  --color-stale:         var(--status-stale);
+
+  --font-serif: "DM Serif Display", serif;
+  --font-mono:  "Space Mono", monospace;
+}
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    border-radius: 0 !important;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Space Mono", monospace;
+    font-size: 0.8125rem;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: "DM Serif Display", serif;
+    font-weight: 400;
+    margin: 0;
+  }
+
+  p { margin: 0; }
+  a { text-decoration: none; }
+
+  ::selection {
+    background: var(--text);
+    color: var(--bg);
+  }
+}
+
+:focus-visible {
+  outline: 0.5px solid var(--text);
+  outline-offset: 3px;
+}
+
+/* ── shared patterns ───────────────────────────────────── */
+
+/* section band: // toronto, on */
+.band {
+  background: var(--bg-hover);
+  border-top: 1px solid var(--rule-strong);
+  border-bottom: 1px solid var(--rule-strong);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 0.5rem 1.5rem;
+}
+
+/* one posting: dense row, 3px status edge, hairline underneath */
+.row {
+  display: grid;
+  align-items: baseline;
+  border-bottom: 1px solid var(--rule);
+  border-left: 3px solid transparent;
+  padding: 0.625rem 1.5rem;
+  transition: background 0.12s ease;
+}
+.row:hover { background: var(--bg-hover); }
+.row[data-status="closing"]    { border-left-color: var(--status-closing); }
+.row[data-status="borderline"] { border-left-color: var(--status-borderline); }
+.row[data-status="applied"]    { border-left-color: var(--status-applied); opacity: 0.55; }
+
+/* unbordered uppercase tag */
+.tag {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
