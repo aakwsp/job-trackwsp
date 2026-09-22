@@ -1,2 +1,5 @@
 .env
 apps-script/seed.json
+node_modules/
+dist/
+*.sqlite
