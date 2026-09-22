@@ -20,11 +20,18 @@ Coding-based roles only:
 Skip non-coding roles (pure PM, design, sales, business analyst, IT helpdesk).
 
 ### Term
-Summer 2027 (roughly May–Aug), including 4- and 8-month terms starting May 2027. Also match "graduating 2028", "penultimate year", "returning to school fall 2027".
+Summer 2027 is the target: the role should start around May 2027. That includes 4-, 8-, 12- and 16-month terms beginning May 2027. Also match "graduating 2028", "penultimate year", "returning to school fall 2027".
+
+Winter 2027 roles are OUT OF SCOPE, not borderline. If a posting says "Winter 2027", "Hiver 2027", "January 2027 start", "Jan-Apr", or is a 4-month winter co-op, skip it: do not verify it, do not send it, do not mention it in the report. Do not spend time confirming details of a posting you have already identified as a winter term. Fall 2026 terms and anything else that neither covers May-August 2027 nor starts in September 2027 is out of scope the same way.
+
+Two kinds of near-miss ARE in scope, and each must be recorded with `borderline: true` and exactly this reason, so I can tell them apart at a glance:
+- a term starting January 2027 that runs through the summer (e.g. Jan-Aug 2027) -> reason: "spans into summer"
+- a term starting around September 2027 (e.g. Sep-Dec 2027, Sep 2027-Apr 2028) -> reason: "fall 2027 start"
+If a borderline reason would combine either of these with something else (French required, clearance, ML-heavy), put the term reason first, then a semicolon, then the rest.
+
 
 ### Eligibility
 Include partial fits with `borderline: true` and a short reason:
-- term outside summer (e.g. Jan–Aug, Sep start)
 - formal co-op enrollment required
 - US work authorization or US relocation required
 - security clearance required
@@ -58,6 +65,9 @@ GET `{URL}?token={TOKEN}`. The response is `{"postings":[...]}`, with job_key, c
 - For postings listing several Canadian cities, use the first listed city.
 - Only record postings you confirmed on the company's own site or ATS. Community lists and job boards are leads, not facts.
 
+
+Never record a posting you already know is wrong, mislabeled, or a duplicate of another posting in this run. Fix it before sending, or leave it out.
+
 ### Write to the inbox
 POST to `{URL}` with header `Content-Type: application/json` and body:
 
@@ -81,7 +91,7 @@ If the GET or POST fails, say so clearly, include the error, and fall back to li
 
 ## Report
 Only include:
-1. New postings: those whose job_key is in `inserted`, grouped by city, with company, role, req ID, deadline, borderline reason, and link. Non-borderline first.
+1. New postings: those whose job_key is in `inserted`, summer-start roles first, then borderline ones (spans into summer, then fall 2027 start, then everything else), grouped by city, with company, role, req ID, deadline, borderline reason, and link. Non-borderline first.
 2. Closing soon: known postings with `applied` false and a deadline within 7 days.
 3. One line with counts: inserted / updated / skipped.
 

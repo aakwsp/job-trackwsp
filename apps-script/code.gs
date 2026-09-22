@@ -26,6 +26,18 @@ function makeKey(p) {
     : `${c}|${norm(p.title)}|${norm(p.city)}`;
 }
 
+// Secondary identity: same company + title + city, regardless of req id.
+function makeTriple(company, title, city) {
+  return `${norm(company)}|${norm(title)}|${norm(city)}`;
+}
+
+// Secondary identity: the posting URL, ignoring tracking params.
+function normUrl(u) {
+  const s = String(u ?? '').trim().toLowerCase();
+  if (!s) return '';
+  return s.split(/[?#]/)[0].replace(/\/+$/, '');
+}
+
 function today() {
   return Utilities.formatDate(new Date(), 'America/Toronto', 'yyyy-MM-dd');
 }
@@ -47,6 +59,7 @@ function getSheet() {
     sh = ss.insertSheet(SHEET_NAME);
     sh.appendRow(HEADERS);
     sh.setFrozenRows(1);
+    sh.getRange('A:Q').setNumberFormat('@');
   }
   return sh;
 }
@@ -61,7 +74,7 @@ function doGet(e) {
 }
 
 // POST { token, postings: [{ company, title, city, req_id, url, deadline,
-//                            posting_status, borderline, borderline_reason }] }
+//                            posting_status, borderline, borderline_reason, source }] }
 function doPost(e) {
   let body;
   try {
@@ -79,11 +92,22 @@ function doPost(e) {
     const header = data[0];
     const col = Object.fromEntries(header.map((k, i) => [k, i]));
 
-    const index = new Map();
-    data.slice(1).forEach((r, i) => index.set(r[col.job_key], i + 2));
+    // Three ways to recognize a row we already have.
+    const byKey = new Map();
+    const byTriple = new Map();
+    const byUrl = new Map();
+    data.slice(1).forEach((r, i) => {
+      const rowNum = i + 2;
+      byKey.set(r[col.job_key], rowNum);
+      const trip = makeTriple(r[col.company], r[col.title], r[col.city]);
+      if (!byTriple.has(trip)) byTriple.set(trip, rowNum);
+      const u = normUrl(r[col.url]);
+      if (u && !byUrl.has(u)) byUrl.set(u, rowNum);
+    });
 
     const inserted = [];
     const updated = [];
+    const merged = [];
     const skipped = [];
     const d = today();
 
@@ -93,7 +117,16 @@ function doPost(e) {
         continue;
       }
       const key = makeKey(p);
-      const rowNum = index.get(key);
+      const trip = makeTriple(p.company, p.title, p.city);
+      const u = normUrl(p.url);
+
+      // Same job, recorded earlier under a different key (usually no req id yet).
+      let rowNum = byKey.get(key);
+      let isMerge = false;
+      if (!rowNum) {
+        rowNum = byTriple.get(trip) || (u ? byUrl.get(u) : undefined);
+        if (rowNum) isMerge = true;
+      }
 
       if (rowNum) {
         const range = sh.getRange(rowNum, 1, 1, header.length);
@@ -103,10 +136,15 @@ function doPost(e) {
             row[col[k]] = p[k];
           }
         }
+        // A req id we didn't have before upgrades the row's key in place.
+        if (norm(p.req_id)) row[col.job_key] = key;
         row[col.last_seen] = d;
         range.setNumberFormat('@');
         range.setValues([row]);
-        updated.push(key);
+        byKey.set(row[col.job_key], rowNum);
+        byTriple.set(trip, rowNum);
+        if (u) byUrl.set(u, rowNum);
+        (isMerge ? merged : updated).push(row[col.job_key]);
       } else {
         const row = new Array(header.length).fill('');
         for (const k of SCHEDULER_COLS) {
@@ -120,12 +158,15 @@ function doPost(e) {
         const target = sh.getRange(sh.getLastRow() + 1, 1, 1, row.length);
         target.setNumberFormat('@');
         target.setValues([row]);
-        index.set(key, sh.getLastRow());
+        const newRow = sh.getLastRow();
+        byKey.set(key, newRow);
+        byTriple.set(trip, newRow);
+        if (u) byUrl.set(u, newRow);
         inserted.push(key);
       }
     }
 
-    return json({ inserted, updated, skipped: skipped.length });
+    return json({ inserted, updated, merged, skipped: skipped.length });
   } finally {
     lock.releaseLock();
   }
