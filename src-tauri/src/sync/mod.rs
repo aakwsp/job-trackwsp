@@ -124,6 +124,14 @@ impl Serialize for SyncError {
     }
 }
 
+impl SyncError {
+    /// reqwest's error Display includes the request URL, which carries
+    /// `?token=` — strip it so the token never reaches the log or the UI.
+    fn from_reqwest(e: reqwest::Error) -> Self {
+        SyncError::Request(e.without_url())
+    }
+}
+
 impl From<sqlx::Error> for SyncError {
     fn from(e: sqlx::Error) -> Self {
         SyncError::Db(e)
@@ -150,9 +158,9 @@ fn fetch_postings(
             .get(url)
             .query(&[("token", token)])
             .send()
-            .map_err(SyncError::Request)?
+            .map_err(SyncError::from_reqwest)?
             .text()
-            .map_err(SyncError::Request)?;
+            .map_err(SyncError::from_reqwest)?;
 
         match serde_json::from_str::<PostingsResponse>(&body) {
             Ok(parsed) => {
