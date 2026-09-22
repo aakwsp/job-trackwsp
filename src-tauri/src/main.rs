@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-  job_trackwsp_lib::run();
+    job_trackwsp_lib::run();
 }
