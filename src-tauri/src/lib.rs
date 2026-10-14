@@ -1,10 +1,12 @@
 mod db;
+mod jobs;
 mod sync;
 
 use std::time::Duration;
 
 use sqlx::SqlitePool;
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(30 * 60);
 
@@ -53,6 +55,37 @@ fn sync_now(pool: tauri::State<'_, SqlitePool>) -> Result<sync::SyncCounts, sync
     sync::run_sync_blocking(&pool, &url, &token)
 }
 
+/// Every non-hidden job for the list view, with its `applied` flag. These
+/// three are `async fn` (unlike `sync_now`) because they only touch SQLx,
+/// which is async already — nothing blocking to keep off the runtime.
+#[tauri::command]
+async fn list_jobs(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<jobs::JobRow>, jobs::JobsError> {
+    jobs::list(&pool).await
+}
+
+/// Creates or removes the `applications` row for a job. Never writes `jobs`.
+#[tauri::command]
+async fn set_applied(
+    pool: tauri::State<'_, SqlitePool>,
+    job_id: i64,
+    applied: bool,
+) -> Result<(), jobs::JobsError> {
+    jobs::set_applied(&pool, job_id, applied).await
+}
+
+/// Opens a posting in the system browser. Done from Rust rather than
+/// exposing the opener plugin to the frontend, so the http(s) check can't be
+/// bypassed and no capability has to be granted to the webview.
+#[tauri::command]
+fn open_posting(app: tauri::AppHandle, url: String) -> Result<(), jobs::JobsError> {
+    jobs::check_url(&url)?;
+    app.opener()
+        .open_url(url.trim(), None::<&str>)
+        .map_err(|e| jobs::JobsError::Open(e.to_string()))
+}
+
 /// Runs once at startup, then every `SYNC_INTERVAL` — its own OS thread
 /// rather than a tokio interval, same reasoning as `sync_now`. If URL/TOKEN
 /// aren't set, logs once and never starts looping rather than spinning on a
@@ -83,7 +116,13 @@ pub fn run() {
     load_dotenv();
 
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![sync_now])
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            sync_now,
+            list_jobs,
+            set_applied,
+            open_posting
+        ])
         .setup(|app| {
             if cfg!(debug_assertions) {
                 app.handle().plugin(
