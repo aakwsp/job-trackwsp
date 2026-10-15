@@ -440,9 +440,41 @@ export function PostingSection({ m, pad }: SectionProps) {
         </Details>
       </div>
       <div className={`pt-[1.125rem] pb-1 ${pad}`}>
-        <OpenButton m={m} />
+        <PostingActions m={m} />
       </div>
     </div>
+  )
+}
+
+// Under the posting's details. Not applied: the same two buttons as the
+// application tab. Applied: when, in green, and a way to the application.
+// Closed: how it ended instead.
+function PostingActions({ m }: { m: RecordModel }) {
+  const { app } = m
+  if (!app) {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <button type="button" onClick={m.markApplied} className={primaryButton}>
+          [ mark applied ]
+        </button>
+        <OpenButton m={m} />
+      </div>
+    )
+  }
+  const closed = stageColor(app.status) === null
+  const line = closed
+    ? `${app.status} ${app.stage_since ? localYmd(app.stage_since) : ''}`
+    : `applied ${app.applied_at ? localYmd(app.applied_at) : ''} · ${agoIso(app.applied_at)}`
+  return (
+    <>
+      <div className="mb-2.5 flex flex-wrap items-center gap-x-3 text-meta">
+        <span className={closed ? 'text-text-muted' : 'text-green'}>{line}</span>
+        <TabLink m={m} tab="application">
+          [ view application → ]
+        </TabLink>
+      </div>
+      <OpenButton m={m} />
+    </>
   )
 }
 
