@@ -1,3 +1,4 @@
+mod applications;
 mod db;
 mod jobs;
 mod sync;
@@ -85,6 +86,62 @@ async fn save_notes(
     jobs::save_notes(&pool, job_id, &body).await
 }
 
+/// Every application with its timeline, for the pipeline and the record.
+#[tauri::command]
+async fn list_applications(
+    pool: tauri::State<'_, SqlitePool>,
+) -> Result<Vec<applications::ApplicationRow>, jobs::JobsError> {
+    applications::list(&pool).await
+}
+
+/// [ → next stage ]. Returns the updated application.
+#[tauri::command]
+async fn advance_stage(
+    pool: tauri::State<'_, SqlitePool>,
+    id: i64,
+) -> Result<applications::ApplicationRow, jobs::JobsError> {
+    applications::advance(&pool, id).await
+}
+
+/// [ mark rejected ].
+#[tauri::command]
+async fn mark_rejected(
+    pool: tauri::State<'_, SqlitePool>,
+    id: i64,
+) -> Result<applications::ApplicationRow, jobs::JobsError> {
+    applications::reject(&pool, id).await
+}
+
+/// [ undo ]: drops the latest event.
+#[tauri::command]
+async fn undo_event(
+    pool: tauri::State<'_, SqlitePool>,
+    id: i64,
+) -> Result<applications::ApplicationRow, jobs::JobsError> {
+    applications::undo(&pool, id).await
+}
+
+/// [ + add application ] for something the scheduler never found.
+#[tauri::command]
+async fn add_application(
+    pool: tauri::State<'_, SqlitePool>,
+    company: String,
+    title: String,
+    applied_on: Option<String>,
+) -> Result<applications::ApplicationRow, jobs::JobsError> {
+    applications::add(&pool, &company, &title, applied_on.as_deref()).await
+}
+
+/// Notes on an application with no posting.
+#[tauri::command]
+async fn save_application_notes(
+    pool: tauri::State<'_, SqlitePool>,
+    id: i64,
+    body: String,
+) -> Result<(), jobs::JobsError> {
+    applications::save_notes(&pool, id, &body).await
+}
+
 /// Opens a posting in the system browser. Done from Rust rather than
 /// exposing the opener plugin to the frontend, so the http(s) check can't be
 /// bypassed and no capability has to be granted to the webview.
@@ -132,7 +189,13 @@ pub fn run() {
             list_jobs,
             set_applied,
             save_notes,
-            open_posting
+            open_posting,
+            list_applications,
+            advance_stage,
+            mark_rejected,
+            undo_event,
+            add_application,
+            save_application_notes
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

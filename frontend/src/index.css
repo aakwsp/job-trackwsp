@@ -34,7 +34,8 @@
   --status-green: #b8dcc8;  /* applied */
   --status-pink:  #f2bdc9;  /* deadline within CLOSING_SOON_DAYS · stale square */
   --status-blue:  #b8c8f0;  /* deadline further out · borderline square */
-  --status-sand:  #c8c0a8;  /* rolling / past due */
+  --status-sand:  #c8c0a8;  /* rolling */
+  /* closed (past due, rejected) uses --text-dim above, not a token of its own */
 }
 
 @theme {
@@ -189,6 +190,9 @@
 [data-color="pink"]  { --c: var(--status-pink); }
 [data-color="blue"]  { --c: var(--status-blue); }
 [data-color="sand"]  { --c: var(--status-sand); }
+[data-color="dim"]   { --c: var(--text-dim); }
+/* a closed application has no status colour; its tag reads muted */
+[data-color="muted"] { --c: var(--text-muted); }
 
 .card[data-color]::before,
 .marker[data-color],
@@ -274,6 +278,8 @@
     var(--status-sand) 75% 100%
   );
 }
+/* the pipeline draws its own, sized by count (Hero's `stripe` prop) */
+.hero[data-stripe="custom"]::before { content: none; }
 /* once mostly scrolled away (Hero sets data-collapsed), fade and lift */
 .hero > * {
   transition: opacity var(--motion) var(--ease), transform var(--motion) var(--ease);
@@ -281,6 +287,11 @@
 .hero[data-collapsed="true"] > * {
   opacity: 0;
   transform: translateY(-0.5rem);
+}
+/* …except a custom stripe, which stays put like the default ::before */
+.hero[data-collapsed="true"] > .hero-stripe {
+  opacity: 1;
+  transform: none;
 }
 
 /* ── motion ────────────────────────────────────────────── */

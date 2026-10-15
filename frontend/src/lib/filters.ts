@@ -1,4 +1,4 @@
-import type { FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
+import type { FilterMode, FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
 import { DEFAULT_FILTERS, FLAGS, STATUSES, matchesFilters, statusOf } from './jobs'
 
 // The two groups of the filter panel. Rows come straight from STATUSES and
@@ -24,32 +24,48 @@ export const FLAG_ROWS: FilterRow[] = FLAGS.map((f) => ({
   shape: 'flag',
 }))
 
-export function isChecked(f: Filters, row: FilterRow): boolean {
+/** The row's state; `null` = off. */
+export function rowMode(f: Filters, row: FilterRow): FilterMode | null {
   // `as` because TypeScript can't tie `row.group` to the type of `row.key`
   // across the index; the FilterRow union guarantees they match.
-  return (f[row.group] as string[]).includes(row.key)
+  return (f[row.group] as Record<string, FilterMode | undefined>)[row.key] ?? null
 }
 
-/** Checks or unchecks one row. Returns a new Filters; never mutates. */
-export function toggleRow(f: Filters, row: FilterRow): Filters {
-  const current = f[row.group] as string[]
-  const next = current.includes(row.key) ? current.filter((k) => k !== row.key) : [...current, row.key]
-  return { ...f, [row.group]: next }
+/** Sets one row's state (`null` = off). Returns a new Filters; never mutates. */
+export function setRow(f: Filters, row: FilterRow, mode: FilterMode | null): Filters {
+  // Copy the group's map, then add or delete this one key. An off row is
+  // removed rather than stored, so a saved filter only lists rows that do
+  // something.
+  const group: Record<string, FilterMode> = { ...f[row.group] }
+  if (mode) group[row.key] = mode
+  else delete group[row.key]
+  return { ...f, [row.group]: group }
 }
 
-/** Every checked row, statuses first, in panel order. Used for the chips. */
-export function checkedRows(f: Filters): FilterRow[] {
-  return [...STATUS_ROWS, ...FLAG_ROWS].filter((row) => isChecked(f, row))
+const NEXT: Record<'off' | FilterMode, FilterMode | null> = { off: 'include', include: 'exclude', exclude: null }
+
+/** off → include → exclude → off. */
+export function cycleRow(f: Filters, row: FilterRow): Filters {
+  return setRow(f, row, NEXT[rowMode(f, row) ?? 'off'])
 }
 
-/** Unchecks everything in the panel; leaves the toolbar's search and city. */
+/** Every row that isn't off, statuses first, in panel order. Used for the chips and the count. */
+export function activeRows(f: Filters): { row: FilterRow; mode: FilterMode }[] {
+  return [...STATUS_ROWS, ...FLAG_ROWS].flatMap((row) => {
+    const mode = rowMode(f, row)
+    // `flatMap` returning [] drops the row; returning [x] keeps it.
+    return mode ? [{ row, mode }] : []
+  })
+}
+
+/** Turns every panel row off; leaves the toolbar's search and city. */
 export function resetPanel(f: Filters): Filters {
-  return { ...f, statuses: [], flags: [] }
+  return { ...f, statuses: {}, flags: {} }
 }
 
 /**
  * The count beside each row: postings that would show if that row were the
- * one checked in its group, given everything else currently set. So a
+ * one included in its group, given everything else currently set. So a
  * status count respects search, city and the flag group, and a flag count
  * respects search, city and the status group.
  */
@@ -74,18 +90,30 @@ export function loadFilters(): Filters {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULT_FILTERS
-    const saved = JSON.parse(raw) as Partial<Filters>
+    const saved = JSON.parse(raw) as { query?: unknown; city?: unknown; statuses?: unknown; flags?: unknown }
     const statusKeys = new Set<string>(STATUSES.map((s) => s.key))
     const flagKeys = new Set<string>(FLAGS.map((f) => f.key))
     return {
       query: typeof saved.query === 'string' ? saved.query : '',
       city: typeof saved.city === 'string' ? saved.city : '',
-      statuses: Array.isArray(saved.statuses) ? saved.statuses.filter((k) => statusKeys.has(k)) : [],
-      flags: Array.isArray(saved.flags) ? saved.flags.filter((k) => flagKeys.has(k)) : [],
+      statuses: loadGroup(saved.statuses, statusKeys),
+      flags: loadGroup(saved.flags, flagKeys),
     }
   } catch {
     return DEFAULT_FILTERS
   }
+}
+
+// One group from storage. Saves from before include/exclude are arrays of
+// checked keys; those were includes, so they load as includes.
+function loadGroup(raw: unknown, keys: Set<string>): Record<string, FilterMode> {
+  const out: Record<string, FilterMode> = {}
+  if (Array.isArray(raw)) {
+    for (const k of raw) if (keys.has(k)) out[k] = 'include'
+  } else if (raw && typeof raw === 'object') {
+    for (const [k, v] of Object.entries(raw)) if (keys.has(k) && (v === 'include' || v === 'exclude')) out[k] = v
+  }
+  return out
 }
 
 export function saveFilters(f: Filters) {

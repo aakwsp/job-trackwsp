@@ -1,4 +1,4 @@
-import type { FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
+import type { FilterMode, FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
 
 export const CLOSING_SOON_DAYS = 7
 export const STALE_DAYS = 30
@@ -8,8 +8,8 @@ export const STALE_DAYS = 30
 export const DEFAULT_FILTERS: Filters = {
   query: '',
   city: '',
-  statuses: [],
-  flags: [],
+  statuses: {},
+  flags: {},
 }
 
 // 'YYYY-MM-DD' → whole days since the epoch. Going through Date.UTC (not
@@ -27,7 +27,7 @@ function ymdOf(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
-function todayYmd(): string {
+export function todayYmd(): string {
   return ymdOf(new Date())
 }
 
@@ -40,7 +40,7 @@ export function localYmd(iso: string): string {
   return ymdOf(new Date(iso))
 }
 
-function addDays(ymd: string, n: number): string {
+export function addDays(ymd: string, n: number): string {
   const d = new Date((dayNumber(ymd) + n) * 86_400_000)
   return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }
@@ -98,7 +98,7 @@ export const STATUSES: Status[] = [
   { key: 'closing', color: 'pink', label: 'closing soon' },
   { key: 'deadline', color: 'blue', label: 'has deadline' },
   { key: 'rolling', color: 'sand', label: 'rolling' },
-  { key: 'pastdue', color: 'sand', label: 'past due' },
+  { key: 'pastdue', color: 'dim', label: 'past due' },
 ]
 
 // First match wins.
@@ -135,6 +135,17 @@ export type Flag = {
 
 export const FLAGS: Flag[] = [
   {
+    // The posting stays green (it was applied); the grey square says how it
+    // ended. `app_status` comes from the application, so a rejection marked
+    // in PIPELINE shows up here too (App patches it after the move).
+    key: 'rejected',
+    color: 'dim',
+    label: 'rejected',
+    short: 'R✕',
+    hint: 'application rejected',
+    test: (job) => job.app_status === 'rejected',
+  },
+  {
     key: 'stale',
     color: 'pink',
     label: `${STALE_DAYS}+ days`,
@@ -156,25 +167,49 @@ export function activeFlags(job: Job): Flag[] {
   return FLAGS.filter((f) => f.test(job))
 }
 
+export type LabelSpec = { key: string; color: StatusColor; text: string }
+
+/**
+ * The bordered labels for one posting: squares first, then the diamond, in
+ * marker order. `short` abbreviates the square labels (COMPACT); diamond
+ * labels are always full words.
+ */
+export function labelsFor(job: Job, short = false): LabelSpec[] {
+  const status = statusInfo(job)
+  return [
+    ...activeFlags(job).map((f) => ({ key: f.key, color: f.color, text: short ? f.short : f.label })),
+    { key: status.key, color: status.color, text: status.label },
+  ]
+}
+
 /** Every flag in slot order, with whether it's showing for this job. */
 export function flagSlots(job: Job): { flag: Flag; on: boolean }[] {
   return FLAGS.map((flag) => ({ flag, on: flag.test(job) }))
 }
 
 /**
- * `ignore` skips one group. The filter panel uses it for its counts: a
- * status row's count is "what you'd see with this status checked", so it
- * applies search, city and the flag group, but not the status group itself.
+ * `ignore` skips one group (its includes and excludes both). The filter
+ * panel uses it for its counts: a status row's count is "what you'd see
+ * with this status included", so it applies search, city and the flag
+ * group, but not the status group itself.
  */
 export function matchesFilters(job: Job, f: Filters, ignore?: 'statuses' | 'flags'): boolean {
   const q = f.query.trim().toLowerCase()
   if (q && !`${job.company} ${job.title}`.toLowerCase().includes(q)) return false
   const c = f.city.trim().toLowerCase()
   if (c && !(job.city ?? '').toLowerCase().includes(c)) return false
-  if (ignore !== 'statuses' && f.statuses.length > 0 && !f.statuses.includes(statusOf(job))) return false
-  if (ignore !== 'flags' && f.flags.length > 0 && !FLAGS.some((fl) => f.flags.includes(fl.key) && fl.test(job)))
-    return false
+  if (ignore !== 'statuses' && !groupPasses(f.statuses, [statusOf(job)])) return false
+  if (ignore !== 'flags' && !groupPasses(f.flags, activeFlags(job).map((fl) => fl.key))) return false
   return true
+}
+
+// One group's verdict, given the row keys this posting matches in it (one
+// status, any number of flags).
+function groupPasses<K extends string>(modes: Partial<Record<K, FilterMode>>, matched: K[]): boolean {
+  if (matched.some((k) => modes[k] === 'exclude')) return false
+  // `Object.values` on a Partial map: the modes of every row that's on.
+  const anyIncludes = Object.values(modes).includes('include')
+  return !anyIncludes || matched.some((k) => modes[k] === 'include')
 }
 
 export type CityGroup = { city: string; jobs: Job[] }
@@ -198,36 +233,23 @@ export function groupByCity(jobs: Job[]): CityGroup[] {
     .sort((a, b) => b.jobs.length - a.jobs.length || a.city.localeCompare(b.city))
 }
 
+// The posting's half of the record's // timeline, built only from dates the
+// sheet gives us. The application's half comes from its events
+// (lib/applications.ts merges the two). Same-day entries keep this order.
+export type PostingEvent = { date: string; label: string; color: StatusColor | null }
 
-// The expanded detail view's // timeline, built only from dates we already
-// store. `color: null` draws a muted mark. Oldest first.
-export type TimelineEntry = {
-  date: string // 'YYYY-MM-DD'
-  label: string
-  shape: 'square' | 'diamond'
-  color: StatusColor | null
-}
-
-export function timeline(job: Job): TimelineEntry[] {
-  const today = todayYmd()
-  const entries: TimelineEntry[] = []
+export function postingEvents(job: Job): PostingEvent[] {
+  const out: PostingEvent[] = []
   if (job.first_seen) {
-    entries.push({ date: job.first_seen, label: 'first seen', shape: 'square', color: null })
+    out.push({ date: job.first_seen, label: 'first seen', color: null })
     // The sheet doesn't record when a posting was flagged, only that it is.
     // The flag is set at discovery, so first_seen is when it happened.
-    if (job.borderline)
-      entries.push({ date: job.first_seen, label: 'flagged borderline', shape: 'square', color: 'blue' })
+    if (job.borderline) out.push({ date: job.first_seen, label: 'flagged borderline', color: 'blue' })
   }
   if (job.deadline) {
     const entered = addDays(job.deadline, -CLOSING_SOON_DAYS)
     // Only once it has actually happened; this is a history, not a forecast.
-    if (entered <= today)
-      entries.push({ date: entered, label: `entered final ${CLOSING_SOON_DAYS} days`, shape: 'diamond', color: 'pink' })
+    if (entered <= todayYmd()) out.push({ date: entered, label: `entered final ${CLOSING_SOON_DAYS} days`, color: 'pink' })
   }
-  if (job.applied_at)
-    entries.push({ date: localYmd(job.applied_at), label: 'applied', shape: 'diamond', color: 'green' })
-  if (job.last_seen) entries.push({ date: job.last_seen, label: 'last seen', shape: 'square', color: null })
-  // ISO dates sort as text. `sort` is stable, so same-day entries keep the
-  // order they were pushed in (first seen before flagged, etc.).
-  return entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+  return out
 }

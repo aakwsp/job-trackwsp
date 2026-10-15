@@ -28,6 +28,9 @@ pub struct JobRow {
     pub applied: bool,
     /// `applications.applied_at`, full ISO timestamp; None when not applied.
     pub applied_at: Option<String>,
+    /// `applications.status` (applied, interview, rejected, ...); None when
+    /// not applied. The list flags rejected postings with it.
+    pub app_status: Option<String>,
     /// From `applications.notes` when applied, else `job_notes.body`.
     pub notes: Option<String>,
 }
@@ -40,6 +43,11 @@ pub enum JobsError {
     ApplicationInProgress(String),
     BadUrl(String),
     Open(String),
+    /// No application with this id.
+    NotFound(i64),
+    /// A pipeline move that doesn't apply from the current state (next stage
+    /// after an offer, rejecting something already closed, ...).
+    BadTransition(String),
 }
 
 impl std::fmt::Display for JobsError {
@@ -52,6 +60,8 @@ impl std::fmt::Display for JobsError {
             ),
             JobsError::BadUrl(u) => write!(f, "refusing to open non-http(s) url: {u}"),
             JobsError::Open(e) => write!(f, "could not open browser: {e}"),
+            JobsError::NotFound(id) => write!(f, "no application with id {id}"),
+            JobsError::BadTransition(why) => write!(f, "{why}"),
         }
     }
 }
@@ -82,7 +92,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
         "SELECT j.id, j.company, j.title, j.city, j.req_id, j.url, j.deadline,
                 j.posting_status, j.borderline, j.borderline_reason, j.source,
                 j.first_seen, j.last_seen,
-                a.id IS NOT NULL AS applied, a.applied_at,
+                a.id IS NOT NULL AS applied, a.applied_at, a.status AS app_status,
                 COALESCE(a.notes, n.body) AS notes
          FROM jobs j
          -- at most one application per job (set_applied never makes a second)
@@ -146,7 +156,19 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
         (false, Some((_, status))) if status != "applied" => {
             return Err(JobsError::ApplicationInProgress(status));
         }
-        (false, Some(_)) => {
+        (false, Some((app_id, _))) => {
+            // Still 'applied', but with more than its first event (say it
+            // advanced and was undone back): deleting the application would
+            // delete that history too, so refuse the same way.
+            let events: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM application_events WHERE application_id = ?",
+            )
+            .bind(app_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if events > 1 {
+                return Err(JobsError::ApplicationInProgress("applied, with later events".into()));
+            }
             sqlx::query(
                 "INSERT INTO job_notes (job_id, body)
                  SELECT job_id, notes FROM applications
@@ -299,6 +321,23 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
+            assert!(matches!(
+                set_applied(&pool, id, false).await,
+                Err(JobsError::ApplicationInProgress(_))
+            ));
+
+            // Back at 'applied' but with history: still refused.
+            sqlx::query("UPDATE applications SET status = 'applied'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO application_events (application_id, type, occurred_at)
+                 SELECT id, 'applied', '2026-01-01T00:00:00Z' FROM applications",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
             assert!(matches!(
                 set_applied(&pool, id, false).await,
                 Err(JobsError::ApplicationInProgress(_))

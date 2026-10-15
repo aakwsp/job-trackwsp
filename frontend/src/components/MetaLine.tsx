@@ -1,19 +1,12 @@
 import type { Job } from '../types'
-import { activeFlags, dateText, statusInfo } from '../lib/jobs'
+import { dateText, labelsFor } from '../lib/jobs'
 
-// The status labels for one posting: squares first, then the diamond, in
-// marker order. Built from the same FLAGS / STATUSES entries as the markers.
-// `short` abbreviates the square labels (COMPACT); diamond labels are always
-// full words.
+// The status labels for one posting (see `labelsFor`), built from the same
+// FLAGS / STATUSES entries as the markers.
 export function Labels({ job, short = false }: { job: Job; short?: boolean }) {
-  const status = statusInfo(job)
-  const labels = [
-    ...activeFlags(job).map((f) => ({ key: f.key, color: f.color, text: short ? f.short : f.label })),
-    { key: status.key, color: status.color, text: status.label },
-  ]
   return (
     <>
-      {labels.map((l) => (
+      {labelsFor(job, short).map((l) => (
         <span key={l.key} className="label" data-color={l.color}>
           {l.text}
         </span>
