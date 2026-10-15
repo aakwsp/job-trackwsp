@@ -99,6 +99,17 @@ pub struct MailStatus {
     pub total: u32,
     /// A poll is running right now.
     pub checking: bool,
+    /// Emails the LLM has read (JT-15).
+    pub parsed: u32,
+    /// Pending emails waiting for the LLM.
+    pub waiting: u32,
+    /// The LLM is working through them right now.
+    pub extracting: bool,
+    /// Why the last extraction run stopped early (a rejected key), if it
+    /// did. Filled in by lib.rs, which owns the extraction state.
+    pub extract_error: Option<String>,
+    /// No Gemini key stored yet: the UI shows the key input.
+    pub needs_key: bool,
 }
 
 pub fn status(mail: &MailState, pool: &SqlitePool) -> Result<MailStatus, MailError> {
@@ -107,7 +118,16 @@ pub fn status(mail: &MailState, pool: &SqlitePool) -> Result<MailStatus, MailErr
         last_new: get_setting(pool, LAST_NEW_KEY)?.and_then(|n| n.parse().ok()).unwrap_or(0),
         total: block_on(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM emails").fetch_one(pool))? as u32,
         checking: mail.running.load(Ordering::SeqCst),
+        parsed: count(pool, "SELECT COUNT(*) FROM emails WHERE status = 'extracted'")?,
+        waiting: count(pool, "SELECT COUNT(*) FROM emails WHERE status = 'pending'")?,
+        extracting: false,
+        extract_error: None,
+        needs_key: false,
     })
+}
+
+fn count(pool: &SqlitePool, sql: &'static str) -> Result<u32, MailError> {
+    Ok(block_on(sqlx::query_scalar::<_, i64>(sql).fetch_one(pool))? as u32)
 }
 
 /// One poll, unless another is running (then this returns at once). With

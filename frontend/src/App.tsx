@@ -16,7 +16,13 @@ import AppHeader from './components/AppHeader'
 import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
-import { CheckMailButton, GmailConnectBlock, GmailStatusLine, MailStatusLine } from './components/GmailConnection'
+import {
+  CheckMailButton,
+  GeminiKeyInput,
+  GmailConnectBlock,
+  GmailStatusLine,
+  MailStatusLine,
+} from './components/GmailConnection'
 import { useMail } from './lib/useMail'
 import { useGmail } from './lib/useGmail'
 import { PAGES, type Page } from './lib/page'
@@ -585,6 +591,9 @@ export default function App() {
                     <span className={gmail.status.kind === 'connected' ? 'mt-1 block' : undefined}>
                       <GmailStatusLine {...gmailProps} />
                     </span>
+                    {gmail.status.kind === 'connected' && mail.status?.needs_key && (
+                      <GeminiKeyInput onSaved={mail.refresh} />
+                    )}
                     {/* Errors while connected (a failed disconnect) go
                         here; while disconnected the block shows them. */}
                     {gmail.status.kind === 'connected' && gmail.error && (

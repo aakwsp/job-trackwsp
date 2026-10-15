@@ -94,4 +94,9 @@ export type MailStatus = {
   last_new: number // messages from that poll that passed the filter
   total: number // every stored email, whatever its status
   checking: boolean // a poll is running now
+  parsed: number // emails the LLM has read (JT-15)
+  waiting: number // pending emails waiting for the LLM
+  extracting: boolean // the LLM is working through them now
+  extract_error: string | null // why the last LLM run stopped early (bad key, ...)
+  needs_key: boolean // no Gemini API key stored yet
 }

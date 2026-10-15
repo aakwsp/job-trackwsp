@@ -52,3 +52,7 @@ export const mailStatus = () => invoke<MailStatus>('mail_status')
 // [ check mail ]: polls now (or waits on nothing if one is running) and
 // resolves with the status afterwards.
 export const mailCheck = () => invoke<MailStatus>('mail_check')
+
+// The Gemini API key (JT-15). Stored by Rust in the OS keyring; it never
+// comes back to the frontend.
+export const llmSaveKey = (key: string) => invoke<void>('llm_save_key', { key })

@@ -41,5 +41,15 @@ export function useMail(active: boolean) {
     }
   }
 
-  return { status, error, busy: checking || !!status?.checking, check }
+  // After saving a key, Rust starts parsing and emits `mail-polled`; this
+  // just refreshes once right away so the key input disappears.
+  async function refresh() {
+    try {
+      setStatus(await api.mailStatus())
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  return { status, error, busy: checking || !!status?.checking, check, refresh }
 }

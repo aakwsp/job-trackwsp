@@ -1,5 +1,6 @@
 mod applications;
 mod db;
+mod extract;
 mod gmail;
 mod jobs;
 mod mail;
@@ -266,7 +267,7 @@ async fn gmail_disconnect(app: tauri::AppHandle) -> Result<(), gmail::GmailError
 async fn mail_status(app: tauri::AppHandle) -> Result<mail::MailStatus, mail::MailError> {
     off_main_thread(
         app,
-        |app| mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>()),
+        full_mail_status,
         |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
     )
     .await
@@ -280,7 +281,7 @@ async fn mail_check(app: tauri::AppHandle) -> Result<mail::MailStatus, mail::Mai
         app,
         |app| {
             let result = poll_mail(app);
-            let status = mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>())?;
+            let status = full_mail_status(app)?;
             result.map(|()| status)
         },
         |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
@@ -314,10 +315,77 @@ fn poll_mail(app: &tauri::AppHandle) -> Result<(), mail::MailError> {
         &app.state::<SqlitePool>(),
         gmail_credentials(app).ok().as_ref(),
     );
-    if let Ok(status) = mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>()) {
+    emit_mail_status(app);
+    // Then hand the pending mail to the LLM, on its own thread so a manual
+    // [ check mail ] returns as soon as the poll is done.
+    spawn_extraction(app.clone());
+    result
+}
+
+/// The status line's data: the poller's numbers plus the extraction state.
+fn full_mail_status(app: &tauri::AppHandle) -> Result<mail::MailStatus, mail::MailError> {
+    let mut status = mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>())?;
+    let ex = app.state::<extract::ExtractState>();
+    status.extracting = ex.is_running();
+    status.extract_error = ex.last_error();
+    // A keyring that can't be read counts as "no key" here; saving one
+    // will report the keyring problem properly.
+    status.needs_key = !extract::has_key(&gmail::store::KeyringStore).unwrap_or(false);
+    Ok(status)
+}
+
+fn emit_mail_status(app: &tauri::AppHandle) {
+    if let Ok(status) = full_mail_status(app) {
         let _ = app.emit("mail-polled", status);
     }
-    result
+}
+
+/// One extraction run over the pending mail (JT-15), then a status event.
+/// Does nothing if one is already running or there's no Gemini key.
+fn spawn_extraction(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let make_client = |key: String| -> Result<Box<dyn extract::gemini::LlmClient>, extract::gemini::CallError> {
+            Ok(Box::new(extract::gemini::GeminiHttp::new(key)?))
+        };
+        let started = !app.state::<extract::ExtractState>().is_running();
+        if started {
+            // Let the status line show "parsing…" while it runs.
+            emit_mail_status(&app);
+        }
+        if let Err(e) = extract::run(
+            &app.state::<extract::ExtractState>(),
+            &app.state::<SqlitePool>(),
+            &gmail::store::KeyringStore,
+            &make_client,
+            &std::thread::sleep,
+        ) {
+            log::error!("extraction stopped: {e}");
+        }
+        emit_mail_status(&app);
+    });
+}
+
+/// Whether a Gemini key is stored (the QUEUE page asks for one if not).
+#[tauri::command]
+async fn llm_key_status(app: tauri::AppHandle) -> Result<bool, String> {
+    off_main_thread(app, |_| extract::has_key(&gmail::store::KeyringStore), |e| e).await
+}
+
+/// [ save key ]: stores the Gemini key in the OS keyring (service
+/// job-trackwsp, user gemini-api-key), then starts extracting. The key is
+/// never logged or written anywhere else.
+#[tauri::command]
+async fn llm_save_key(app: tauri::AppHandle, key: String) -> Result<(), String> {
+    off_main_thread(
+        app,
+        move |app| {
+            extract::save_key(&gmail::store::KeyringStore, &key)?;
+            spawn_extraction(app.clone());
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
 }
 
 /// Polls on app start, then every `POLL_INTERVAL`, on its own thread (like
@@ -393,7 +461,9 @@ pub fn run() {
             gmail_disconnect,
             mail_status,
             mail_check,
-            mail_restore
+            mail_restore,
+            llm_key_status,
+            llm_save_key
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -417,6 +487,7 @@ pub fn run() {
             app.manage(pool);
             app.manage(gmail::GmailState::new(Box::new(gmail::store::KeyringStore)));
             app.manage(mail::MailState::default());
+            app.manage(extract::ExtractState::default());
             spawn_mail_poller(app.handle().clone());
 
             Ok(())
