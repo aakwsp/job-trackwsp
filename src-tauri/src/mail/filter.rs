@@ -57,6 +57,7 @@ pub const IGNORE_ADDRESSES: &[&str] = &[
     "forwarding-noreply@google.com",
     "noreply-accounts@google.com",
     "workspace-noreply@google.com",
+    "google-gemini-noreply@google.com",
     "account-security-noreply@accountprotection.microsoft.com",
 ];
 
@@ -323,6 +324,7 @@ mod tests {
         for addr in [
             "noreply-accounts@google.com",
             "workspace-noreply@google.com",
+            "google-gemini-noreply@google.com",
             "mail-noreply@google.com",
         ] {
             assert_eq!(
