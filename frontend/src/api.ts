@@ -12,6 +12,8 @@ export const listJobs = () => invoke<Job[]>('list_jobs')
 export const setApplied = (jobId: number, applied: boolean) =>
   invoke<void>('set_applied', { jobId, applied })
 
+export const saveNotes = (jobId: number, body: string) => invoke<void>('save_notes', { jobId, body })
+
 export const openPosting = (url: string) => invoke<void>('open_posting', { url })
 
 export const syncNow = () => invoke<SyncCounts>('sync_now')

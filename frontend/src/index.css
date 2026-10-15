@@ -16,6 +16,16 @@
   --rule:       #211e26;
   --gap:        #1a171e;
 
+  /* motion: one duration and easing for every transition in the app */
+  --motion: 180ms;
+  --ease:   ease-out;
+
+  /* entrances (hero, toolbar, cards): the portfolio's ease-out curve — fast
+     start, long soft landing */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --enter-ms:  500ms;   /* hero title / subtitle / toolbar */
+  --rise-ms:   350ms;   /* each band, card or row */
+
   /* tracker additions */
   --bg-hover:   #18161c;  /* row/cell hover */
   --rule-strong:#2e2a36;  /* section bands */
@@ -48,12 +58,17 @@
      (`--text-meta` → `text-meta`). All rem, so the whole UI follows the
      root font-size that the ctrl +/- scale sets on <html>; px values in
      the comments are at 100%. */
+  --text-micro:        0.625rem;   /* 10px  top strip, view tabs */
   --text-meta:         0.75rem;    /* 12px  labels, meta lines, bands, chips */
   --text-sub:          0.875rem;   /* 14px  role titles under a company */
   --text-body:         0.9375rem;  /* 15px  body default */
   --text-company-line: 1.0625rem;  /* 17px  company in list view */
   --text-company:      1.3125rem;  /* 21px  company on a card */
+  --text-brand:        1.25rem;    /* 20px  "job tracker" in the header */
   --text-heading:      1.75rem;    /* 28px  page title */
+  --text-hero:         3.5rem;     /* 56px  hero title per view */
+  --text-record:       3.25rem;    /* 52px  company in the detail drawer */
+  --text-record-xl:    4.75rem;    /* 76px  company in the expanded detail */
 }
 
 @layer base {
@@ -114,6 +129,9 @@
   position: relative;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
+  /* No opacity transition on the card itself: its opacity belongs to the
+     scroll reveal (`.rise`), and a transition here would make every reveal
+     wait and fade — which is what left rows blank while scrolling. */
   transition: background 0.12s ease;
 }
 .card:hover { background: var(--bg-hover); }
@@ -129,8 +147,14 @@
   left: 0;
   width: 3px;
   background: transparent;
+  transition: background-color var(--motion) var(--ease);
 }
-.card[data-applied="true"] { opacity: 0.55; }
+/* Marking applied: the stripe turns green first (::before, above), then the
+   card's content settles into its dimmed look — hence the delay, so the two
+   read as one step after the other. The dim is on the children, not the
+   card, for the reason in `.card`; the stripe stays full green. */
+.card > * { transition: opacity var(--motion) var(--ease) var(--motion); }
+.card[data-applied="true"] > * { opacity: 0.55; }
 
 /* status diamond: a 10px square turned 45deg, ~14px tip to tip (rem, so
    it scales with the text). Drawn in CSS rather than with the ◆ character
@@ -144,6 +168,13 @@
   flex-shrink: 0;
 }
 .marker { transform: rotate(45deg); }
+
+/* Smaller marks for the detail drawer header and timeline. Two classes
+   (`.flag.mark-xs`) outrank the one-class rule above, so these win. A
+   Tailwind `size-*` utility wouldn't: Tailwind's utilities sit in a
+   cascade layer, and plain unlayered CSS like `.flag` beats any layer. */
+.flag.mark-sm, .marker.mark-sm { width: 0.5rem;   height: 0.5rem; }   /* 8px */
+.flag.mark-xs, .marker.mark-xs { width: 0.375rem; height: 0.375rem; } /* 6px */
 
 /* `data-color` → one variable, `--c`, on that element. Everything that
    shows a status colour (stripe, diamond, square, label) then reads `--c`,
@@ -184,4 +215,188 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+/* ── shell ─────────────────────────────────────────────── */
+
+/* beige strip at the very top */
+.strip {
+  background: var(--text);
+  color: var(--bg);
+  font-size: var(--text-micro);
+  letter-spacing: 0.04em;
+}
+.strip-rule {
+  height: 1px;
+  background: var(--text-muted);
+}
+.strip-diamond {
+  width: 0.375rem;
+  height: 0.375rem;
+  background: var(--bg);
+  transform: rotate(45deg);
+}
+
+/* JOBS / QUEUE / PIPELINE. The active one is a solid parchment block. */
+.tab {
+  cursor: pointer;
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  transition: color var(--motion) var(--ease), background-color var(--motion) var(--ease);
+}
+.tab:hover { color: var(--text); }
+.tab-active,
+.tab-active:hover {
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+/* hero: the four status colours as a 3px stripe down its left edge, a
+   quarter each — same idea as a card's stripe, all statuses at once */
+.hero {
+  position: relative;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: linear-gradient(
+    var(--status-pink) 0 25%,
+    var(--status-blue) 25% 50%,
+    var(--status-green) 50% 75%,
+    var(--status-sand) 75% 100%
+  );
+}
+/* once mostly scrolled away (Hero sets data-collapsed), fade and lift */
+.hero > * {
+  transition: opacity var(--motion) var(--ease), transform var(--motion) var(--ease);
+}
+.hero[data-collapsed="true"] > * {
+  opacity: 0;
+  transform: translateY(-0.5rem);
+}
+
+/* ── motion ────────────────────────────────────────────── */
+
+/* Height + fade open/close for things that stay mounted (filter panel,
+   city sections). Animating `height: auto` isn't possible, but a one-row
+   grid whose row goes from 0fr to 1fr is: the row's size is a number the
+   browser can interpolate, and 1fr means "as tall as the content".
+   `.reveal-inner` needs `min-height: 0` + `overflow: hidden` so the
+   content can actually shrink to nothing instead of spilling out. */
+.reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion) var(--ease), opacity var(--motion) var(--ease);
+}
+.reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Detail drawer. Entering: `@starting-style` gives the values to animate
+   *from* when the element first appears, so it slides in from off-screen
+   right with no JavaScript. Leaving: JobDetail sets data-closing, which
+   slides it back out before React removes it. */
+.drawer {
+  transform: translateX(0);
+  transition: transform var(--motion) var(--ease);
+}
+@starting-style {
+  .drawer { transform: translateX(100%); }
+}
+.drawer[data-closing="true"] { transform: translateX(100%); }
+
+/* The expanded detail: centred, so it rises and fades in instead of
+   sliding. JobDetail swaps between the two elements (different `key`),
+   so each one's @starting-style plays when you expand or collapse. */
+.peek {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity var(--motion) var(--ease), transform var(--motion) var(--ease);
+}
+@starting-style {
+  .peek { opacity: 0; transform: translateY(0.75rem); }
+}
+.peek[data-closing="true"] { opacity: 0; transform: translateY(0.75rem); }
+
+/* the dimmed layer over the list behind the drawer */
+.drawer-backdrop {
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  opacity: 1;
+  transition: opacity var(--motion) var(--ease);
+}
+@starting-style {
+  .drawer-backdrop { opacity: 0; }
+}
+.drawer-backdrop[data-closing="true"] { opacity: 0; }
+
+/* View-mode and page switches: the new content swaps in instantly and this
+   one container fades in (App keys it, so it remounts and replays this).
+   Deliberately not the View Transitions API, which crashes WebKitGTK here
+   (see lib/motion.ts). */
+.fade-in {
+  animation: fade-in var(--motion) var(--ease);
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+}
+
+/* Entrances. Only transform and opacity move: the browser can animate those
+   without recomputing layout, which keeps a screenful of cards smooth.
+
+   `.enter` plays once when the element mounts (hero, toolbar). `--d` is its
+   delay, set inline to stagger them. `backwards` holds the starting frame
+   during the delay, so nothing flashes in its final spot first. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+.enter {
+  animation: rise var(--enter-ms) var(--ease-expo) var(--d, 0ms) backwards;
+}
+
+/* `.rise` is for bands, cards and LINE rows, driven by lib/reveal.ts:
+   - `.rise` alone: waiting, hidden at the starting frame
+   - `.is-in`: shown. Alone (fast scrolling, or already revealed earlier
+     this visit) it just appears.
+   - `.is-rising`: also plays the rise, with `--rise-delay` staggering a
+     batch. JS sets `will-change` for exactly this long and clears it on
+     `animationend`, so no card keeps a compositing layer afterwards.
+   An animation rather than a transition on purpose: cards already use
+   `transition` (hover, applied fade) and `opacity` (applied dim), and with
+   `backwards` fill the animation lets go of both once it ends. */
+.rise:not(.is-in) {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.rise.is-rising {
+  animation: rise var(--rise-ms) var(--ease-expo) var(--rise-delay, 0ms) backwards;
+}
+
+/* Reduced motion: everything above simply happens instantly. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+    animation: none !important;
+  }
+  .rise {
+    opacity: 1 !important;
+    transform: none !important;
+  }
 }

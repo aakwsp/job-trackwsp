@@ -80,6 +80,7 @@ mod tests {
                 "applications",
                 "emails",
                 "extractions",
+                "job_notes",
                 "jobs",
             ]
         );

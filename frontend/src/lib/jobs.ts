@@ -20,10 +20,29 @@ function dayNumber(ymd: string): number {
   return Date.UTC(y, m - 1, d) / 86_400_000
 }
 
+const pad = (n: number) => String(n).padStart(2, '0')
+
+/** A Date as 'YYYY-MM-DD' in local time. */
+function ymdOf(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+}
+
 function todayYmd(): string {
-  const now = new Date()
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  return ymdOf(new Date())
+}
+
+/**
+ * A full ISO timestamp the app recorded (UTC, e.g. `applied_at`) as the local
+ * 'YYYY-MM-DD'. Applying at 9pm in Toronto is already tomorrow in UTC, so
+ * slicing the string would show the wrong day.
+ */
+export function localYmd(iso: string): string {
+  return ymdOf(new Date(iso))
+}
+
+function addDays(ymd: string, n: number): string {
+  const d = new Date((dayNumber(ymd) + n) * 86_400_000)
+  return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`
 }
 
 /** Days from today (local) until the deadline; negative once it has passed. */
@@ -48,6 +67,13 @@ export function daysSince(ymd: string | null): number | null {
   if (!ymd) return null
   const days = dayNumber(todayYmd()) - dayNumber(ymd)
   return Number.isNaN(days) ? null : days
+}
+
+/** "today" / "3d ago" for a 'YYYY-MM-DD'; '' if missing. */
+export function agoText(ymd: string | null): string {
+  const days = daysSince(ymd)
+  if (days === null) return ''
+  return days <= 0 ? 'today' : `${days}d ago`
 }
 
 // LINE view only: a character cap keeps the rows a steady rhythm. The card
@@ -172,3 +198,36 @@ export function groupByCity(jobs: Job[]): CityGroup[] {
     .sort((a, b) => b.jobs.length - a.jobs.length || a.city.localeCompare(b.city))
 }
 
+
+// The expanded detail view's // timeline, built only from dates we already
+// store. `color: null` draws a muted mark. Oldest first.
+export type TimelineEntry = {
+  date: string // 'YYYY-MM-DD'
+  label: string
+  shape: 'square' | 'diamond'
+  color: StatusColor | null
+}
+
+export function timeline(job: Job): TimelineEntry[] {
+  const today = todayYmd()
+  const entries: TimelineEntry[] = []
+  if (job.first_seen) {
+    entries.push({ date: job.first_seen, label: 'first seen', shape: 'square', color: null })
+    // The sheet doesn't record when a posting was flagged, only that it is.
+    // The flag is set at discovery, so first_seen is when it happened.
+    if (job.borderline)
+      entries.push({ date: job.first_seen, label: 'flagged borderline', shape: 'square', color: 'blue' })
+  }
+  if (job.deadline) {
+    const entered = addDays(job.deadline, -CLOSING_SOON_DAYS)
+    // Only once it has actually happened; this is a history, not a forecast.
+    if (entered <= today)
+      entries.push({ date: entered, label: `entered final ${CLOSING_SOON_DAYS} days`, shape: 'diamond', color: 'pink' })
+  }
+  if (job.applied_at)
+    entries.push({ date: localYmd(job.applied_at), label: 'applied', shape: 'diamond', color: 'green' })
+  if (job.last_seen) entries.push({ date: job.last_seen, label: 'last seen', shape: 'square', color: null })
+  // ISO dates sort as text. `sort` is stable, so same-day entries keep the
+  // order they were pushed in (first seen before flagged, etc.).
+  return entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+}

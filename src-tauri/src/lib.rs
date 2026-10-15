@@ -75,6 +75,16 @@ async fn set_applied(
     jobs::set_applied(&pool, job_id, applied).await
 }
 
+/// Saves the note on a job (applied or not). Blank clears it.
+#[tauri::command]
+async fn save_notes(
+    pool: tauri::State<'_, SqlitePool>,
+    job_id: i64,
+    body: String,
+) -> Result<(), jobs::JobsError> {
+    jobs::save_notes(&pool, job_id, &body).await
+}
+
 /// Opens a posting in the system browser. Done from Rust rather than
 /// exposing the opener plugin to the frontend, so the http(s) check can't be
 /// bypassed and no capability has to be granted to the webview.
@@ -121,6 +131,7 @@ pub fn run() {
             sync_now,
             list_jobs,
             set_applied,
+            save_notes,
             open_posting
         ])
         .setup(|app| {
