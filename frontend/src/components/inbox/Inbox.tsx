@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useStuck } from '../../lib/useStuck'
+import { loadFolded, saveFolded, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
 import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
@@ -59,9 +60,9 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // Opening a job opens its newest email (the board's default).
   async function openJob(id: number) {
     setJobId(id)
-    const nodes = await api.appEmails(id)
-    const last = nodes[nodes.length - 1]
-    if (last) open(last.email_id)
+    const emails = (await api.appTimeline(id)).filter((n) => n.kind === 'email')
+    const last = emails.at(-1)
+    if (last && last.email_id !== null) open(last.email_id)
   }
 
   // Keys: `m` read/unread, `g` by email / by job, ←/→ along the open
@@ -70,7 +71,27 @@ export default function Inbox({ inbox, top, connected }: Props) {
   const current = rows.find((r) => r.id === openId)
   // j/k walk this order: checking, then all mail (by email), or the
   // applications (by job).
-  const order = useMemo(() => [...checking, ...autoRows, ...checked].map((r) => r.id), [checking, autoRows, checked])
+  // Folded sections, remembered across launches (lib/inboxFold.ts).
+  const [folded, setFolded] = useState(loadFolded)
+  function toggleFold(s: FoldKey) {
+    setFolded((prev) => {
+      const next = new Set(prev)
+      if (next.has(s)) next.delete(s)
+      else next.add(s)
+      saveFolded(next)
+      return next
+    })
+  }
+  // j/k walk the open sections only.
+  const order = useMemo(
+    () =>
+      [
+        ...(folded.has('checking') ? [] : checking),
+        ...(folded.has('auto') ? [] : autoRows),
+        ...(folded.has('checked') ? [] : checked),
+      ].map((r) => r.id),
+    [checking, autoRows, checked, folded],
+  )
 
   // After confirm / reject: the email leaves // checking now (patched
   // ahead of the reload), and the next checking email opens.
@@ -82,9 +103,9 @@ export default function Inbox({ inbox, top, connected }: Props) {
     if (next !== undefined) open(next, false)
   }
   const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
-  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob, searchOpen })
+  const keyState = useRef({ current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob, searchOpen })
   useEffect(() => {
-    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob, searchOpen }
+    keyState.current = { current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob, searchOpen }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
@@ -119,7 +140,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
         const i = timeline.findIndex((n) => n.email_id === id)
         const next = timeline[i + (e.key === 'ArrowRight' ? 1 : -1)]
         if (!next) return
-        inbox.open(next.email_id)
+        if (next.email_id !== null) inbox.open(next.email_id)
       } else return
       e.preventDefault()
     }
@@ -150,10 +171,9 @@ export default function Inbox({ inbox, top, connected }: Props) {
         ) : (
           <>
         {checking.length > 0 ? (
-          <>
-            <Band count={checking.length}>// checking</Band>
+          <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold}>
             <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
-          </>
+          </Section>
         ) : (
           connected &&
           inbox.rows &&
@@ -169,20 +189,20 @@ export default function Inbox({ inbox, top, connected }: Props) {
           )
         )}
         {autoRows.length > 0 && (
-          <>
-            <Band count={autoRows.length} top={checking.length > 0 || connected || !!top}>
-              // auto
-            </Band>
+          <Section name="auto" count={autoRows.length} folded={folded.has('auto')} onToggle={toggleFold} top={checking.length > 0 || connected || !!top}>
             <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
-          </>
+          </Section>
         )}
         {checked.length > 0 && (
-          <>
-            <Band count={checked.length} top={checking.length > 0 || autoRows.length > 0 || connected || !!top}>
-              // checked
-            </Band>
+          <Section
+            name="checked"
+            count={checked.length}
+            folded={folded.has('checked')}
+            onToggle={toggleFold}
+            top={checking.length > 0 || autoRows.length > 0 || connected || !!top}
+          >
             <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
-          </>
+          </Section>
         )}
         {inbox.searched && rows.length === 0 && (
           <p className="py-6 pr-5 pl-6 text-meta text-text-dim">nothing matches “{inbox.searched}”.</p>
@@ -358,6 +378,48 @@ export function Band({ children, count, top = false }: { children: ReactNode; co
       <h2 className="font-mono">{children}</h2>
       {count !== undefined && <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>}
     </div>
+  )
+}
+
+// A state section (// checking, // auto, // checked) that folds like the
+// city groups in JOBS: the band is a <button> (keyboard focus and
+// Enter/Space for free), and the rows stay mounted while folded so `.reveal`
+// (index.css) can animate the height; `inert` takes hidden rows out of Tab
+// order.
+function Section({
+  name,
+  count,
+  folded,
+  onToggle,
+  top = false,
+  children,
+}: {
+  name: FoldKey
+  count: number
+  folded: boolean
+  onToggle: (s: FoldKey) => void
+  top?: boolean
+  children: ReactNode
+}) {
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={() => onToggle(name)}
+        aria-expanded={!folded}
+        className={`flex h-9 w-full cursor-pointer items-center border-b border-rule bg-bg pr-5 pl-6 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase hover:text-text ${
+          top ? 'border-t' : ''
+        }`}
+      >
+        <h2 className="font-mono">
+          {folded ? '+ ' : '- '}// {name}
+        </h2>
+        <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>
+      </button>
+      <div className="reveal" data-open={!folded} inert={folded}>
+        <div className="reveal-inner">{children}</div>
+      </div>
+    </section>
   )
 }
 

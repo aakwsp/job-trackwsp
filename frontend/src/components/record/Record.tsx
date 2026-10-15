@@ -69,18 +69,21 @@ export default function Record({
   const [closing, setClosing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [tab, setTab] = useState<Tab>(initialTab)
-  // The application's emails for the emails tab (JT-18), oldest first.
-  // Fetched when the application changes; null until then.
-  const [emails, setEmails] = useState<TimelineNode[] | null>(null)
+  // The application's timeline (JT-18: events and emails), oldest first.
+  // Refetched when the application or its events change (a stage moved,
+  // an undo); null until then. `version` is a string so the effect only
+  // re-runs when something it shows actually changed.
+  const [timeline, setTimeline] = useState<TimelineNode[] | null>(null)
   const appId = app?.id ?? null
+  const version = app ? `${app.id}:${app.events.length}:${app.status}:${app.applied_at}` : null
   useEffect(() => {
     if (appId === null) return
     let stale = false
-    api.appEmails(appId).then((n) => !stale && setEmails(n)).catch(() => !stale && setEmails([]))
+    api.appTimeline(appId).then((n) => !stale && setTimeline(n)).catch(() => !stale && setTimeline([]))
     return () => {
       stale = true
     }
-  }, [appId])
+  }, [appId, version])
 
   // The textarea's text lives here, not in App, so typing doesn't touch
   // App's state on every keystroke. `saved` remembers what the DB has, so a
@@ -247,7 +250,7 @@ export default function Record({
     reject: () => app && onReject(app),
     undo,
     goTo: setTab,
-    emails,
+    timeline: app ? timeline : job?.first_seen ? [firstSeen(job.first_seen)] : [],
     openEmail: onOpenEmail,
     notes: { id: notesId, value: notes, error: notesError, onChange: setNotes, onBlur: saveNotes },
   }
@@ -438,4 +441,9 @@ function Section({ tab, m, pad, wide }: { tab: Tab; m: RecordModel; pad: string;
     case 'emails':
       return <EmailsSection {...props} />
   }
+}
+
+// Not applied yet: the timeline is just the posting's first sighting.
+function firstSeen(at: string): TimelineNode {
+  return { kind: 'event', email_id: null, event_type: 'first_seen', status: null, at, read: true }
 }

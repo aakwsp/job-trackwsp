@@ -651,9 +651,9 @@ async fn inbox_jobs(app: tauri::AppHandle, query: Option<String>) -> Result<Vec<
     .await
 }
 
-/// One application's email timeline, oldest first (the record's emails tab).
+/// One application's timeline, events and emails, oldest first (the record).
 #[tauri::command]
-async fn app_emails(app: tauri::AppHandle, application_id: i64) -> Result<Vec<inbox::TimelineNode>, String> {
+async fn app_timeline(app: tauri::AppHandle, application_id: i64) -> Result<Vec<inbox::TimelineNode>, String> {
     off_main_thread(
         app,
         move |app| inbox::timeline(&app.state::<SqlitePool>(), application_id).map_err(|e| e.to_string()),
@@ -740,7 +740,7 @@ pub fn run() {
             inbox_set_read,
             inbox_open_in_gmail,
             inbox_jobs,
-            app_emails
+            app_timeline
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

@@ -755,16 +755,23 @@ fn persist(pool: &SqlitePool, e: &EmailIn, d: &Decision, status: &str) -> Result
             (Action::AttachEvent(id), _, true) => (Some(*id), false),
             _ => (None, false),
         };
+        // Older proof of applying moves the applied date back to it.
+        let redated_from = match (&d.action, d.application_id, event_id, applying) {
+            (Action::AttachEvent(_), Some(app), Some(ev), true) if e.event_type == "applied" && !e.received_at.is_empty() => {
+                crate::applications::redate_applied(&mut tx, app, ev, &e.received_at).await?
+            }
+            _ => None,
+        };
         sqlx::query(
             "INSERT INTO email_matches (email_id, extraction_id, application_id, candidate_ids, suggested_job_id,
-                                        score, reasons, action, event_id, wrote_event, note, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                                        score, reasons, action, event_id, wrote_event, note, redated_from, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
              ON CONFLICT (email_id) DO UPDATE SET
                extraction_id = excluded.extraction_id, application_id = excluded.application_id,
                candidate_ids = excluded.candidate_ids, suggested_job_id = excluded.suggested_job_id,
                score = excluded.score, reasons = excluded.reasons, action = excluded.action,
                event_id = excluded.event_id, wrote_event = excluded.wrote_event, note = excluded.note,
-               updated_at = excluded.updated_at",
+               redated_from = excluded.redated_from, updated_at = excluded.updated_at",
         )
         .bind(e.email_id)
         .bind(d.extraction_id)
@@ -777,6 +784,7 @@ fn persist(pool: &SqlitePool, e: &EmailIn, d: &Decision, status: &str) -> Result
         .bind(event_id)
         .bind(wrote)
         .bind(&d.note)
+        .bind(redated_from)
         .execute(&mut *tx)
         .await?;
         sqlx::query("UPDATE emails SET status = ? WHERE id = ?").bind(status).bind(e.email_id).execute(&mut *tx).await?;
@@ -910,25 +918,83 @@ pub fn undo(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Removes the event this email wrote, if it wrote one.
+/// Removes the event this email wrote, if it wrote one, or puts back the
+/// applied date it moved.
 fn undo_event(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
-    let row: Option<(Option<i64>, Option<i64>, i64)> = block_on(
-        sqlx::query_as("SELECT application_id, event_id, wrote_event FROM email_matches WHERE email_id = ?")
+    type Row = (Option<i64>, Option<i64>, i64, Option<String>);
+    let row: Option<Row> = block_on(
+        sqlx::query_as("SELECT application_id, event_id, wrote_event, redated_from FROM email_matches WHERE email_id = ?")
             .bind(email_id)
             .fetch_optional(pool),
     )
     .map_err(|e| e.to_string())?;
-    let Some((Some(app), Some(event), 1)) = row else { return Ok(()) };
+    let Some((Some(app), Some(event), wrote, redated_from)) = row else { return Ok(()) };
+    if wrote != 1 && redated_from.is_none() {
+        return Ok(());
+    }
     block_on(async {
         let mut tx = pool.begin().await.map_err(crate::jobs::JobsError::from)?;
-        crate::applications::remove_event(&mut tx, app, event).await?;
-        sqlx::query("UPDATE email_matches SET event_id = NULL, wrote_event = 0 WHERE email_id = ?")
+        if wrote == 1 {
+            crate::applications::remove_event(&mut tx, app, event).await?;
+        } else if let Some(at) = &redated_from {
+            crate::applications::restore_applied(&mut tx, app, event, at).await?;
+        }
+        sqlx::query("UPDATE email_matches SET event_id = NULL, wrote_event = 0, redated_from = NULL WHERE email_id = ?")
             .bind(email_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await.map_err(crate::jobs::JobsError::from)
     })
     .map_err(|e: crate::jobs::JobsError| e.to_string())
+}
+
+/// One applied date moved back by [`redate_existing`].
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Serialize)]
+pub struct Redated {
+    pub email_id: i64,
+    pub application_id: i64,
+    pub from: String,
+    pub to: String,
+}
+
+/// The re-date rule for emails applied before it existed: every auto or
+/// confirmed "applied" email attached to a later applied event moves that
+/// event back to the email's date (oldest email first, so the earliest
+/// proof wins). Applications in `skip` are left alone.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn redate_existing(pool: &SqlitePool, skip: &[i64]) -> Result<Vec<Redated>, String> {
+    let rows: Vec<(i64, i64, i64, String)> = block_on(
+        sqlx::query_as(
+            "SELECT m.email_id, m.application_id, m.event_id, e.received_at
+             FROM email_matches m
+             JOIN emails e ON e.id = m.email_id
+             JOIN extractions x ON x.id = m.extraction_id
+             WHERE m.action = 'attach_event' AND m.wrote_event = 0 AND m.redated_from IS NULL
+               AND m.application_id IS NOT NULL AND m.event_id IS NOT NULL
+               AND x.event_type = 'applied' AND e.status IN ('auto', 'confirmed') AND e.received_at IS NOT NULL
+             ORDER BY e.received_at, e.id",
+        )
+        .fetch_all(pool),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (email_id, app, event, at) in rows.into_iter().filter(|r| !skip.contains(&r.1)) {
+        let moved = block_on(async {
+            let mut tx = pool.begin().await.map_err(crate::jobs::JobsError::from)?;
+            let old = crate::applications::redate_applied(&mut tx, app, event, &at).await?;
+            if let Some(old) = &old {
+                sqlx::query("UPDATE email_matches SET redated_from = ? WHERE email_id = ?").bind(old).bind(email_id).execute(&mut *tx).await?;
+            }
+            tx.commit().await.map_err(crate::jobs::JobsError::from)?;
+            Ok::<_, crate::jobs::JobsError>(old)
+        })
+        .map_err(|e| e.to_string())?;
+        if let Some(from) = moved {
+            out.push(Redated { email_id, application_id: app, from, to: at });
+        }
+    }
+    Ok(out)
 }
 
 /// Fields the user can correct before confirming. None leaves a field as is.
@@ -1389,6 +1455,77 @@ mod tests {
         )
         .unwrap();
         (status, events)
+    }
+
+    fn live(pool: &SqlitePool) {
+        block_on(sqlx::query("INSERT INTO settings (key, value) VALUES ('routing_live', '1')").execute(pool)).unwrap();
+    }
+
+    fn applied_dates(pool: &SqlitePool, app: i64) -> (String, String) {
+        block_on(sqlx::query_as(
+            "SELECT a.applied_at, e.occurred_at FROM applications a JOIN application_events e ON e.application_id = a.id AND e.type = 'applied' WHERE a.id = ?",
+        )
+        .bind(app)
+        .fetch_one(pool))
+        .unwrap()
+    }
+
+    #[test]
+    fn older_applied_email_moves_the_applied_date_back_and_undo_restores_it() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        // Marked applied by hand today; the confirmation email is from 09-17.
+        let app = seed(&pool, &[("applied", "2026-09-17T14:00:00Z")]);
+        let clicked = applied_dates(&pool, app).0;
+        assert!(clicked.as_str() > "2026-10-01");
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        live(&pool);
+        run(&RoutingState::default(), &pool, false, None).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "auto");
+        assert_eq!(applied_dates(&pool, app), ("2026-09-17T14:00:00Z".into(), "2026-09-17T14:00:00Z".into()));
+        // Undo puts the clicked date back.
+        undo(&pool, email).unwrap();
+        assert_eq!(applied_dates(&pool, app), (clicked.clone(), clicked.clone()));
+        // A newer applied email never moves it later.
+        confirm(&pool, email, Some(app), None).unwrap();
+        assert_eq!(applied_dates(&pool, app).1, "2026-09-17T14:00:00Z");
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn redate_existing_fixes_attachments_made_before_the_rule() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let app = seed(&pool, &[("applied", "2026-09-17T14:00:00Z"), ("applied", "2026-09-16T09:00:00Z")]);
+        let clicked = applied_dates(&pool, app).0;
+        live(&pool);
+        run(&RoutingState::default(), &pool, false, None).unwrap();
+        // Pretend both attached before the rule: put the clicked date back.
+        block_on(async {
+            sqlx::query("UPDATE email_matches SET redated_from = NULL").execute(&pool).await.unwrap();
+            sqlx::query("UPDATE application_events SET occurred_at = ?").bind(&clicked).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE applications SET applied_at = ?").bind(&clicked).execute(&pool).await.unwrap();
+        });
+        assert!(redate_existing(&pool, &[app]).unwrap().is_empty()); // skipped
+        let moved = redate_existing(&pool, &[]).unwrap();
+        assert_eq!(moved.len(), 1); // the oldest email wins; the other is later
+        assert_eq!(applied_dates(&pool, app).0, "2026-09-16T09:00:00Z");
+        assert!(redate_existing(&pool, &[]).unwrap().is_empty()); // idempotent
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The re-date rule for existing attachments, on the database in
+    /// JT_DB_DIR, skipping the applications in JT_SKIP (comma-separated):
+    ///   JT_DB_DIR=... JT_SKIP=2 cargo test --lib routing::tests::redate_existing_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn redate_existing_real() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let skip: Vec<i64> = std::env::var("JT_SKIP").unwrap_or_default().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        println!("{}", serde_json::to_string(&redate_existing(&pool, &skip).unwrap()).unwrap());
     }
 
     #[test]

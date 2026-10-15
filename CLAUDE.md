@@ -137,6 +137,16 @@ insert a new row.
   run and whenever applications change, **only once `settings.routing_live`
   = '1'** (live since 2026-10-15); `routing::run(.., dry = true)` decides and simulates without
   writing. Emails the user undid / edited / rejected are never auto again.
+  An `applied` email that attaches (auto or confirm) to a later `applied`
+  event moves that event and `applications.applied_at` back to the email's
+  date; `email_matches.redated_from` keeps the old date so undo restores
+  it (`routing::redate_existing` fixed the ones attached before the rule).
+- Timeline (JT-18, `inbox::timeline`, `components/Timeline.tsx`): one
+  horizontal timeline per application, used in INBOX and the record's
+  summary / application / emails tabs. Diamonds = emails in their stage
+  colour (hollow while checking); squares = events that aren't emails
+  (posting first seen, applied by hand, manual stage changes). An event an
+  email wrote is drawn once, as that email. No other posting noise.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
   `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the

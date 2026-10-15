@@ -135,6 +135,7 @@ pub struct AppRef {
     pub company: String,
     pub title: String,
     pub status: String,
+    pub applied_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -156,33 +157,55 @@ pub struct MatchPart {
     pub wrote_event: bool,
 }
 
-/// One node of an application's email timeline. Mirrors `TimelineNode`.
+/// One node of an application's timeline (JT-18: one timeline everywhere,
+/// INBOX and the record). Mirrors `TimelineNode`. `kind` is "email" (a
+/// diamond in its stage colour) or "event" (a square: first seen, applied
+/// by hand, a manual stage change). Events an email wrote aren't nodes of
+/// their own: that email's diamond is the event.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct TimelineNode {
-    pub email_id: i64,
+    pub kind: String,
+    /// Emails only.
+    pub email_id: Option<i64>,
+    /// An email's extracted type (applied, follow_up...), an event's type
+    /// (applied, assessment, rejected...), or "first_seen".
     pub event_type: Option<String>,
-    /// auto / confirmed (filled node) or checking (hollow).
-    pub status: String,
-    pub received_at: Option<String>,
+    /// Emails: auto / confirmed (filled) or checking (hollow).
+    pub status: Option<String>,
+    /// received_at, occurred_at, or the posting's first_seen (a date).
+    pub at: Option<String>,
     pub read: bool,
 }
 
-/// The emails matched to one application, oldest first: the horizontal
-/// timeline in INBOX and in the record's emails tab. Emails the user
-/// rejected aren't part of it.
+/// One application's timeline, oldest first: its posting's first sighting,
+/// its manual events and the emails matched to it (not ones the user
+/// rejected).
 pub fn timeline(pool: &SqlitePool, application_id: i64) -> Result<Vec<TimelineNode>, sqlx::Error> {
-    block_on(
+    let mut nodes: Vec<TimelineNode> = block_on(
         sqlx::query_as(
-            "SELECT e.id AS email_id, x.event_type, e.status, e.received_at, e.read_at IS NOT NULL AS read
+            "SELECT 'email' AS kind, e.id AS email_id, x.event_type, e.status, e.received_at AS at,
+                    e.read_at IS NOT NULL AS read
              FROM email_matches m
              JOIN emails e ON e.id = m.email_id
              LEFT JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
-             WHERE m.application_id = ? AND e.status IN ('auto', 'confirmed', 'checking')
-             ORDER BY e.received_at, e.id",
+             WHERE m.application_id = ?1 AND e.status IN ('auto', 'confirmed', 'checking')
+             UNION ALL
+             SELECT 'event', NULL, ev.type, NULL, ev.occurred_at, 1
+             FROM application_events ev WHERE ev.application_id = ?1 AND ev.origin = 'manual'
+             UNION ALL
+             SELECT 'event', NULL, 'first_seen', NULL, j.first_seen, 1
+             FROM applications a JOIN jobs j ON j.id = a.job_id
+             WHERE a.id = ?1 AND j.first_seen IS NOT NULL",
         )
         .bind(application_id)
         .fetch_all(pool),
-    )
+    )?;
+    // Text sorts as time ('2026-09-17' before '2026-09-17T…'); on a tie
+    // events come first, then emails by id.
+    nodes.sort_by(|a, b| {
+        (a.at.as_deref().unwrap_or(""), a.kind != "event", a.email_id).cmp(&(b.at.as_deref().unwrap_or(""), b.kind != "event", b.email_id))
+    });
+    Ok(nodes)
 }
 
 /// One application in the by-job list. Mirrors `InboxJob`.
@@ -260,7 +283,7 @@ pub fn detail(pool: &SqlitePool, email_id: i64) -> Result<Option<Detail>, sqlx::
         block_on(
             sqlx::query_as(
                 "SELECT a.id, COALESCE(j.company, a.company, '') AS company,
-                        COALESCE(j.title, a.title, '') AS title, a.status
+                        COALESCE(j.title, a.title, '') AS title, a.status, a.applied_at
                  FROM applications a LEFT JOIN jobs j ON j.id = a.job_id
                  ORDER BY company, title",
             )
@@ -284,6 +307,7 @@ pub fn detail(pool: &SqlitePool, email_id: i64) -> Result<Option<Detail>, sqlx::
                 company: a.company.clone(),
                 title: a.title.clone(),
                 status: a.status.clone(),
+                applied_at: a.applied_at.clone(),
             });
             let suggested_job = match job {
                 Some(id) => block_on(sqlx::query_as("SELECT id, company, title FROM jobs WHERE id = ?").bind(id).fetch_optional(pool))?,
@@ -402,9 +426,24 @@ mod tests {
         set_read(&pool, first, true).unwrap();
 
         let t = timeline(&pool, 1).unwrap();
-        let ids: Vec<i64> = t.iter().map(|n| n.email_id).collect();
-        assert_eq!(ids, [first, second]); // oldest first; the rejected one is out
-        assert_eq!((t[0].status.as_str(), t[1].event_type.as_deref()), ("auto", Some("interview")));
+        let ids: Vec<Option<i64>> = t.iter().map(|n| n.email_id).collect();
+        assert_eq!(ids, [Some(first), Some(second)]); // oldest first; the rejected one is out
+        assert_eq!((t[0].status.as_deref(), t[1].event_type.as_deref()), (Some("auto"), Some("interview")));
+
+        // Manual events and the posting's first sighting are squares; an
+        // event an email wrote is that email's diamond, not a node of its own.
+        block_on(async {
+            sqlx::query("INSERT INTO jobs (job_key, company, title, triple, first_seen) VALUES ('k', 'Acme', 'Backend Intern', 'k', '2026-08-20')")
+                .execute(&pool).await.unwrap();
+            sqlx::query("UPDATE applications SET job_id = 1 WHERE id = 1").execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO application_events (application_id, type, occurred_at, origin) VALUES (1, 'applied', '2026-08-25T00:00:00Z', 'manual')")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO application_events (application_id, type, occurred_at, origin, email_id) VALUES (1, 'interview', '2026-09-10T00:00:00Z', 'email', ?)")
+                .bind(second).execute(&pool).await.unwrap();
+        });
+        let t = timeline(&pool, 1).unwrap();
+        let kinds: Vec<(&str, Option<&str>)> = t.iter().map(|n| (n.kind.as_str(), n.event_type.as_deref())).collect();
+        assert_eq!(kinds, [("event", Some("first_seen")), ("event", Some("applied")), ("email", Some("applied")), ("email", Some("interview"))]);
 
         let j = jobs(&pool, None).unwrap();
         assert_eq!(j.len(), 2);
@@ -412,7 +451,7 @@ mod tests {
         assert_eq!((j[1].emails, j[1].unread), (2, 1));
 
         // The detail carries its application's timeline.
-        assert_eq!(detail(&pool, second).unwrap().unwrap().timeline.len(), 2);
+        assert_eq!(detail(&pool, second).unwrap().unwrap().timeline.len(), 4);
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }

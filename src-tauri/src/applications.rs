@@ -219,6 +219,57 @@ pub async fn write_email_event(
 /// Removes one specific event (an email's auto-applied one, on undo) and
 /// recomputes the status from what's left, in the caller's transaction.
 /// Refuses to remove an application's only event.
+/// Moves an `applied` event back to `at` when `at` is earlier (an applied
+/// email older than the applied date the user clicked), and
+/// `applications.applied_at` with it. Returns the date it had before, or
+/// None when nothing moved (not an applied event, or not later). "Applied"
+/// is the first stage, so moving it earlier never reorders the timeline.
+pub async fn redate_applied(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+    event_id: i64,
+    at: &str,
+) -> Result<Option<String>, JobsError> {
+    let old: Option<String> = sqlx::query_scalar(
+        "SELECT occurred_at FROM application_events
+         WHERE id = ? AND application_id = ? AND type = 'applied' AND occurred_at > ?",
+    )
+    .bind(event_id)
+    .bind(id)
+    .bind(at)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let Some(old) = old else { return Ok(None) };
+    set_applied_date(tx, id, event_id, at).await?;
+    Ok(Some(old))
+}
+
+/// Puts an applied event (and `applied_at`) back on `at`: undoing
+/// [`redate_applied`].
+pub async fn restore_applied(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i64, at: &str) -> Result<(), JobsError> {
+    set_applied_date(tx, id, event_id, at).await
+}
+
+async fn set_applied_date(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i64, at: &str) -> Result<(), JobsError> {
+    sqlx::query("UPDATE application_events SET occurred_at = ? WHERE id = ? AND application_id = ? AND type = 'applied'")
+        .bind(at)
+        .bind(event_id)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?;
+    // applied_at is the earliest applied event (normally the only one).
+    sqlx::query(
+        "UPDATE applications SET
+           applied_at = (SELECT MIN(occurred_at) FROM application_events WHERE application_id = ?1 AND type = 'applied'),
+           updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE id = ?1",
+    )
+    .bind(id)
+    .execute(&mut **tx)
+    .await?;
+    recompute_status(tx, id).await
+}
+
 pub async fn remove_event(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i64) -> Result<(), JobsError> {
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?")
         .bind(id)

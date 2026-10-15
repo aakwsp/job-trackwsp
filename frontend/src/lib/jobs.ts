@@ -244,25 +244,3 @@ export function groupByCity(jobs: Job[]): CityGroup[] {
     .map(([city, jobs]) => ({ city, jobs }))
     .sort((a, b) => b.jobs.length - a.jobs.length || a.city.localeCompare(b.city))
 }
-
-// The posting's half of the record's // timeline, built only from dates the
-// sheet gives us. The application's half comes from its events
-// (lib/applications.ts merges the two). Same-day entries keep this order.
-export type PostingEvent = { date: string; label: string; color: StatusColor | null }
-
-export function postingEvents(job: Job): PostingEvent[] {
-  const out: PostingEvent[] = []
-  if (job.first_seen) {
-    out.push({ date: job.first_seen, label: 'first seen', color: null })
-    // The sheet doesn't record when a posting was flagged, only that it is.
-    // The flag is set at discovery, so first_seen is when it happened.
-    if (job.borderline) out.push({ date: job.first_seen, label: 'flagged borderline', color: 'blue' })
-  }
-  if (job.removed_at) out.push({ date: localYmd(job.removed_at), label: 'removed from sheet', color: 'dim' })
-  if (job.deadline) {
-    const entered = addDays(job.deadline, -CLOSING_SOON_DAYS)
-    // Only once it has actually happened; this is a history, not a forecast.
-    if (entered <= todayYmd()) out.push({ date: entered, label: `entered final ${CLOSING_SOON_DAYS} days`, color: 'pink' })
-  }
-  return out
-}

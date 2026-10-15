@@ -1,5 +1,5 @@
-import type { AppStatus, Application, Job, Stage, StatusColor } from '../types'
-import { daysSince, localYmd, postingEvents } from './jobs'
+import type { AppStatus, Application, Stage, StatusColor } from '../types'
+import { daysSince, localYmd } from './jobs'
 
 // The four pipeline columns, in order. The colours are the stage's own and
 // mean something different from the JOBS list (where green = applied):
@@ -90,42 +90,6 @@ export function stageTrack(app: Application | null): TrackCell[] {
     const state = i === current ? 'current' : i < (current >= 0 ? current : reached + 1) ? 'done' : 'off'
     return { stage, date: last && state !== 'off' ? localYmd(last.occurred_at) : null, state }
   })
-}
-
-const EVENT_LABELS: Record<AppStatus, string> = {
-  applied: 'applied',
-  assessment: 'moved to assessment',
-  interview: 'moved to interview',
-  offer: 'moved to offer',
-  rejected: 'marked rejected',
-  withdrawn: 'withdrawn',
-}
-
-export type TimelineEntry = {
-  date: string // local 'YYYY-MM-DD'
-  label: string
-  kind: 'posting' | 'application'
-  color: StatusColor | null // null = muted
-}
-
-/**
- * The record's // timeline: what we know about the posting (from `jobs`
- * fields) interleaved with the application's events. Oldest first; on the
- * same day posting entries come first, then events in the order they were
- * recorded.
- */
-export function recordTimeline(job: Job | null, app: Application | null): TimelineEntry[] {
-  const entries: TimelineEntry[] = [
-    ...(job ? postingEvents(job) : []).map((e) => ({ ...e, kind: 'posting' as const })),
-    ...(app?.events ?? []).map((e) => ({
-      date: localYmd(e.occurred_at),
-      label: EVENT_LABELS[e.type],
-      kind: 'application' as const,
-      color: stageColor(e.type),
-    })),
-  ]
-  // `sort` is stable, so equal dates keep the order above.
-  return entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
 }
 
 /** Case-insensitive match on company or role, for the pipeline search. */

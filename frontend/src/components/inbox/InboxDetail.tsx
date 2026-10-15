@@ -2,10 +2,10 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useStuck } from '../../lib/useStuck'
 import type { Notify } from '../../lib/useInbox'
 import * as api from '../../api'
-import type { InboxDetail, RouteEdit } from '../../types'
-import { eventColor, eventLabel, localDayTime } from '../../lib/inbox'
+import type { AppRef, InboxDetail, RouteEdit } from '../../types'
+import { eventColor, eventLabel, localDay, localDayTime } from '../../lib/inbox'
 import { outlineButton, primaryButton } from '../record/parts'
-import EmailTimeline from './EmailTimeline'
+import Timeline from '../Timeline'
 import Select from '../Select'
 
 // The open email (design/inbox/Inbox.dc.html, right column): // email,
@@ -44,10 +44,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
   // opening another email drops it without an effect to reset it.
   const [editingFor, setEditingFor] = useState<number | null>(null)
   const [edits, setEdits] = useState<RouteEdit>({})
-  const [changingFor, setChangingFor] = useState<number | null>(null)
-  const [pickApp, setPickApp] = useState<number | null>(null)
   const editing = editingFor === email.id
-  const changing = changingFor === email.id
 
   const isChecking = email.status === 'checking' || email.status === 'extracted'
   const isDone = email.status === 'auto' || email.status === 'confirmed'
@@ -83,8 +80,22 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
   ]
 
   const app = m?.application ?? null
+  // The rows under // match: routing's candidates, the matched one, then
+  // every other application at the same company (so the right one is
+  // there even when routing missed it).
+  const pickable = pickList(detail, x?.company ?? null)
+  // Matches the email to another application right away: undoes an
+  // applied email first (it goes back to checking), then re-routes it.
+  // The detail reloads straight after (act), so the score, reasons and
+  // effect line follow at once.
+  const assign = (id: number) =>
+    act(async () => {
+      await undoFirst()
+      await api.routeEdit(email.id, { application_id: id })
+    })
   const writes = m?.action.startsWith('write_event:') ? m.action.slice('write_event:'.length) : null
   const effect = effectLine(email.status, detail, writes, editing)
+  const emailCount = detail.timeline.filter((n) => n.kind === 'email').length
 
   // The actions, shared by the buttons and the keys.
   const canConfirm = isChecking && (!!app || !!m?.suggested_job)
@@ -113,24 +124,31 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
   }
   const toggleEdit = () => (editing ? act(saveEdits).then(stopEditing) : setEditingFor(email.id))
 
-  // c confirm · e edit · x reject · esc leaves editing / change match.
-  // Through a ref, like the list's keys, so the handler sees this render.
-  const keys = useRef({ canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, changing })
+  // c / Enter confirm · 1–9 match · e edit · x reject · esc leaves
+  // editing. Through a ref, like the list's keys, so the handler sees this
+  // render.
+  const keys = useRef({ canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, pickable, app, assign })
   useEffect(() => {
-    keys.current = { canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, changing }
+    keys.current = { canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, pickable, app, assign }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       const k = keys.current
       if (e.key === 'Escape') {
-        if (!k.editing && !k.changing) return
+        if (!k.editing) return
         setEditingFor(null)
         setEdits({})
-        setChangingFor(null)
       } else if (e.target instanceof Element && e.target.closest('input, textarea, select')) {
         return
-      } else if (e.key === 'c' && k.canConfirm) k.confirm()
+      } else if ((e.key === 'c' || (e.key === 'Enter' && !(e.target instanceof Element && e.target.closest('button')))) && k.canConfirm)
+        // Enter on a focused button already clicks it; don't also confirm.
+        k.confirm()
+      else if (/^[1-9]$/.test(e.key) && (k.isChecking || k.isDone)) {
+        const a = k.pickable[Number(e.key) - 1]
+        if (!a) return
+        if (a.id !== k.app?.id) k.assign(a.id)
+      }
       else if (e.key === 'e' && (k.isChecking || k.isDone)) k.toggleEdit()
       else if (e.key === 'x' && k.isChecking) k.reject()
       else return
@@ -155,10 +173,10 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         </p>
         {detail.timeline.length > 0 && (
           <>
-            <Band flush aside={`${(app?.company ?? '').toLowerCase()} · ${detail.timeline.length} ${detail.timeline.length === 1 ? 'email' : 'emails'}`}>
+            <Band flush aside={`${(app?.company ?? '').toLowerCase()} · ${emailCount} ${emailCount === 1 ? 'email' : 'emails'}`}>
               // timeline
             </Band>
-            <EmailTimeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
+            <Timeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
           </>
         )}
       </Pinned>
@@ -252,83 +270,58 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         )}
       </div>
 
-      <Band>// match</Band>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 px-8 pt-4">
-        <div className="min-w-[16.25rem] flex-1 text-meta leading-[1.6]">
-          {app ? (
-            <>
-              <span className="font-serif text-[1.0625rem] lowercase">{app.company}</span>
-              <span className="text-text-dim"> · </span>
-              <span className="text-text-muted lowercase">{app.title}</span>
-              <span className="text-text-dim"> · </span>
-              currently{' '}
-              <span data-color={eventColor(app.status) ?? undefined} className={eventColor(app.status) ? 'text-(--c)' : 'text-text-muted'}>
-                {STAGE_NAME[app.status] ?? app.status}
-              </span>
-            </>
-          ) : m && m.candidates.length > 1 ? (
-            <span className="text-text-muted">
-              {m.candidates.length} applications could match: {m.candidates.map((c) => `${c.company.toLowerCase()} — ${c.title.toLowerCase()}`).join(' · ')}
-            </span>
-          ) : m?.suggested_job ? (
-            <span className="text-text-muted">
-              no application yet · posting: <span className="text-text lowercase">{m.suggested_job.company} — {m.suggested_job.title}</span>
-            </span>
-          ) : (
-            <span className="text-text-dim">{m ? 'not in pipeline' : 'not matched yet'}</span>
-          )}
+      <Band aside={pickable.length > 0 ? (isChecking ? '1–9 or click to match · c confirms' : '1–9 or click to re-match') : undefined}>
+        // match
+      </Band>
+      {/* The candidates as rows: the matched one is outlined; clicking a row
+          (or pressing its number) matches the email to it at once. A
+          radiogroup, since exactly one can be the match. */}
+      {pickable.length > 0 && (
+        <div role="radiogroup" aria-label="match to application" className="px-8 pt-3">
+          {pickable.map((a, i) => {
+            const on = a.id === app?.id
+            const c = eventColor(a.status)
+            return (
+              <button
+                key={a.id}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => !on && assign(a.id)}
+                className={`grid w-full cursor-pointer grid-cols-[1.5rem_minmax(0,1fr)_auto_auto] items-baseline gap-x-3 border px-3 py-2 text-left text-meta leading-normal ${
+                  on ? 'border-text bg-bg-active' : 'border-transparent border-b-rule hover:border-rule-strong hover:bg-bg-active'
+                }`}
+              >
+                <span className={on ? 'text-text' : 'text-text-dim'}>{i < 9 ? i + 1 : ''}</span>
+                <span className="truncate">
+                  <span className="font-serif text-[1.0625rem] lowercase">{a.company}</span>
+                  <span className="text-text-dim"> · </span>
+                  <span className="text-text-muted lowercase">{a.title}</span>
+                </span>
+                <span data-color={c ?? undefined} className={c ? 'text-(--c)' : 'text-text-muted'}>
+                  {STAGE_NAME[a.status] ?? a.status}
+                </span>
+                <span className="text-text-dim">{a.applied_at ? localDay(a.applied_at) : '—'}</span>
+              </button>
+            )
+          })}
         </div>
-        {m && (
-          <button
-            type="button"
-            onClick={() => {
-              setChangingFor(changing ? null : email.id)
-              setPickApp(app?.id ?? m.candidates[0]?.id ?? null)
-            }}
-            aria-pressed={changing}
-            className={outlineButton}
-          >
-            [ change match ]
-          </button>
+      )}
+      <div className="px-8 pt-3 text-meta leading-[1.6]">
+        {app ? null : m?.suggested_job ? (
+          <span className="text-text-muted">
+            no application yet · posting: <span className="text-text lowercase">{m.suggested_job.company} — {m.suggested_job.title}</span>
+          </span>
+        ) : (
+          pickable.length === 0 && <span className="text-text-dim">{m ? `no application at ${(x?.company ?? 'this company').toLowerCase()}` : 'not matched yet'}</span>
         )}
       </div>
       {m && (
-        <p className="px-8 pt-2 text-[0.65625rem] leading-[1.7] text-text-dim">
+        <p className="px-8 pt-1 text-[0.65625rem] leading-[1.7] text-text-dim">
           score <span className={m.score < 0.8 ? 'text-pink' : 'text-text-muted'}>{m.score.toFixed(2)}</span>
           {m.reasons.filter((r) => !r.startsWith('llm 0') && !r.startsWith('llm 1')).map((r) => ` · ${r}`)}
           {m.note ? ` — ${m.note}` : ''}
         </p>
-      )}
-      {changing && m && (
-        <div className="flex flex-wrap items-center gap-2 px-8 pt-3">
-          <Select
-            label="match to application"
-            value={pickApp ?? ''}
-            onChange={(v) => setPickApp(Number(v))}
-            className="h-11 min-w-0 flex-1"
-          >
-            {/* Candidates first, then every other application. */}
-            {[...m.candidates, ...detail.applications.filter((a) => !m.candidates.some((c) => c.id === a.id))].map((a) => (
-              <option key={a.id} value={a.id}>
-                {a.company.toLowerCase()} — {a.title.toLowerCase()} ({a.status})
-              </option>
-            ))}
-          </Select>
-          <button
-            type="button"
-            disabled={pickApp === null}
-            onClick={() =>
-              act(async () => {
-                await undoFirst()
-                await api.routeEdit(email.id, { application_id: pickApp! })
-                setChangingFor(null)
-              })
-            }
-            className={outlineButton}
-          >
-            [ use this ]
-          </button>
-        </div>
       )}
 
       <Band>// actions</Band>
@@ -364,7 +357,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         <p className="mt-3.5 text-[0.71875rem] leading-[1.6] text-text-muted">{effect}</p>
       </div>
       <p className="px-8 pt-[1.625rem] pb-7 text-micro leading-[1.8] text-text-dim">
-        j/k next/prev · ←/→ along timeline · c confirm · e edit · x reject · m read/unread · g by email/by job · esc stop editing
+        j/k next/prev · ←/→ along timeline · 1–9 match · c / enter confirm · e edit · x reject · m read/unread · g by email/by job · esc stop editing
       </p>
     </>
   )
@@ -380,6 +373,25 @@ function Pinned({ children }: { children: ReactNode }) {
       {children}
     </div>
   )
+}
+
+/** Company key for "same company": lowercase, letters and digits only. */
+function norm(s: string | null | undefined): string {
+  return (s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()
+}
+
+// Candidates first (routing's order), then the matched application, then
+// the rest at any of their companies or the extracted one. Keys 1–9 reach
+// the first nine.
+function pickList(d: InboxDetail, extracted: string | null): AppRef[] {
+  const m = d.match
+  const out: AppRef[] = []
+  const add = (a: AppRef | null | undefined) => a && !out.some((o) => o.id === a.id) && out.push(a)
+  m?.candidates.forEach(add)
+  add(m?.application)
+  const cos = new Set([...out.map((a) => norm(a.company)), norm(extracted)].filter(Boolean))
+  d.applications.filter((a) => cos.has(norm(a.company))).forEach(add)
+  return out
 }
 
 function EditButton({ editing, onToggle }: { editing: boolean; onToggle: () => void }) {
@@ -401,7 +413,7 @@ function effectLine(status: string, d: InboxDetail, writes: string | null, editi
   if (status === 'checking' || status === 'extracted') {
     if (!app) {
       if (m?.suggested_job) return 'no application yet: this creates one from the suggested posting, then applies the email to it.'
-      return 'pick an application with [ change match ] to confirm.'
+      return 'pick the application above (1–9) to confirm.'
     }
     let line = writes
       ? `confirming moves ${co} from ${stageNow} → ${STAGE_NAME[writes] ?? writes} and adds it to the timeline.`

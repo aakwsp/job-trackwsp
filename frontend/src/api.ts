@@ -90,4 +90,4 @@ export const routeUnreject = (emailId: number) => invoke<void>('route_unreject',
 // [ not ignored ]: re-fetches the email from Gmail and re-parses it.
 export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
 export const inboxJobs = (query: string | null) => invoke<InboxJob[]>('inbox_jobs', { query })
-export const appEmails = (applicationId: number) => invoke<TimelineNode[]>('app_emails', { applicationId })
+export const appTimeline = (applicationId: number) => invoke<TimelineNode[]>('app_timeline', { applicationId })

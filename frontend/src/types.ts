@@ -126,7 +126,7 @@ export type IgnoredRow = {
   filter_reason: string | null
 }
 
-export type AppRef = { id: number; company: string; title: string; status: string }
+export type AppRef = { id: number; company: string; title: string; status: string; applied_at: string | null }
 
 export type InboxDetail = {
   email: {
@@ -162,7 +162,7 @@ export type InboxDetail = {
     wrote_event: boolean
   } | null
   applications: AppRef[]
-  timeline: TimelineNode[] // the matched application's emails, oldest first
+  timeline: TimelineNode[] // the matched application's timeline, oldest first
 }
 
 // Corrections for routing::edit (JT-16). Omitted = unchanged.
@@ -175,11 +175,15 @@ export type RouteEdit = {
   application_id?: number
 }
 
+// One node of an application's timeline (JT-18): an email (diamond) or an
+// event that isn't one (square: first seen, applied by hand, a manual stage
+// change). Mirrors inbox::TimelineNode.
 export type TimelineNode = {
-  email_id: number
-  event_type: string | null
-  status: InboxStatus
-  received_at: string | null
+  kind: 'email' | 'event'
+  email_id: number | null // emails only
+  event_type: string | null // email: extracted type; event: its type or 'first_seen'
+  status: InboxStatus | null // emails only
+  at: string | null // received / occurred; first_seen is a plain date
   read: boolean
 }
 
