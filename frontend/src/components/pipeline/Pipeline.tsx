@@ -12,6 +12,9 @@ const COLUMN_CAP = 8
 
 type Props = {
   apps: Application[]
+  // The search box, owned by App so it survives page switches.
+  query: string
+  onQuery: (q: string) => void
   // The application open in the record, outlined in its column.
   selectedId: number | null
   notice: ReactNode
@@ -24,8 +27,7 @@ type Props = {
 // PIPELINE: four stage columns (applied → assessment → interview → offer),
 // then a collapsed band of closed ones. Every entry opens the same record
 // as JOBS does, on its application tab.
-export default function Pipeline({ apps, selectedId, notice, onSelect, onAdvance, onAdd }: Props) {
-  const [query, setQuery] = useState('')
+export default function Pipeline({ apps, query, onQuery, selectedId, notice, onSelect, onAdvance, onAdd }: Props) {
   const [adding, setAdding] = useState(false)
   // Columns showing everything rather than the first COLUMN_CAP.
   const [uncapped, setUncapped] = useState<Set<Stage>>(new Set())
@@ -63,7 +65,7 @@ export default function Pipeline({ apps, selectedId, notice, onSelect, onAdvance
           <input
             type="search"
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e) => onQuery(e.target.value)}
             placeholder="search company / role"
             aria-label="search applications by company or role"
             className={`${field} w-56`}

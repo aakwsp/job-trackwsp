@@ -87,6 +87,17 @@ export default function Record({
     )
   }
 
+  // Also save on unmount, for the ways out that skip `close()` (switching
+  // page with ctrl+1–3 unmounts the record directly). The ref always holds
+  // the latest `saveNotes`, which sees the current text; updated in an
+  // effect, since writing a ref during render is off limits. If the note
+  // was already saved, `saveNotes` does nothing.
+  const saveOnUnmount = useRef(saveNotes)
+  useEffect(() => {
+    saveOnUnmount.current = saveNotes
+  })
+  useEffect(() => () => saveOnUnmount.current(), [])
+
   // Every way out of the record saves first: Esc while typing never fires
   // the textarea's blur before the panel goes away.
   function close() {

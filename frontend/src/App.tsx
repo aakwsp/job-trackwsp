@@ -61,6 +61,9 @@ export default function App() {
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
   const [record, setRecord] = useState<OpenRecord | null>(null)
+  // PIPELINE's search. Here rather than in Pipeline, which remounts on every
+  // page switch, so it survives leaving and coming back like JOBS' filters.
+  const [pipelineQuery, setPipelineQuery] = useState('')
   // The confirmation line at the bottom after a hover shortcut. A new
   // object per toast, so the timer effect below restarts for each one.
   const [toast, setToastState] = useState<Toast | null>(null)
@@ -137,8 +140,37 @@ export default function App() {
   function switchPage(p: Page) {
     if (p === page) return
     if (mainRef.current) scrollByPage.current[page] = mainRef.current.scrollTop
+    // An open record belongs to the page it was opened on. Unmounting it
+    // saves its notes (see Record), so nothing typed is lost.
+    setRecord(null)
     setPage(p)
   }
+
+  // Page shortcuts: ctrl+1–3 jump to a page, ctrl+← / ctrl+→ step to the
+  // neighbour (no wraparound). They run with a record open too; switching
+  // closes it. No dependency list: it always reads the current `page`.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.repeat) return
+      const i = PAGES.findIndex((p) => p.page === page)
+      let target: Page | undefined
+      // Compared as text, not `Number(e.key)`: ctrl+0 is the UI scale's
+      // reset (useUiScale), and `Number('')` would be 0 as well.
+      const digit = ['1', '2', '3'].indexOf(e.key)
+      if (digit !== -1) target = PAGES[digit]?.page
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        // In a text field ctrl+arrow jumps by word; leave that alone.
+        if (e.target instanceof Element && e.target.closest('input, textarea')) return
+        target = PAGES[i + (e.key === 'ArrowLeft' ? -1 : 1)]?.page
+        // At either end there's no neighbour: do nothing at all.
+        if (!target) return
+      } else return
+      e.preventDefault()
+      if (target) switchPage(target)
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  })
 
   const counts = useMemo(() => rowCounts(jobs, filters), [jobs, filters])
 
@@ -539,6 +571,8 @@ export default function App() {
                 {load.kind === 'ready' && (
                   <Pipeline
                     apps={apps}
+                    query={pipelineQuery}
+                    onQuery={setPipelineQuery}
                     selectedId={recordApp?.id ?? null}
                     notice={noticeLine}
                     onSelect={(app) => setRecord({ jobId: app.job_id, appId: app.id, from: 'pipeline', tab: 'application' })}

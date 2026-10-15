@@ -12,11 +12,14 @@ export default function AppHeader({ page, onPage }: Props) {
     <header className="flex items-center justify-between border-b border-rule-strong px-4 py-3">
       <span className="font-serif text-brand leading-none">job tracker</span>
       <nav className="flex items-center gap-1">
-        {PAGES.map((p) => (
+        {PAGES.map((p, i) => (
           <button
             key={p.page}
             type="button"
             onClick={() => onPage(p.page)}
+            // The native hover tooltip names the shortcut (App handles it).
+            title={`${p.tab} · ctrl+${i + 1}`}
+            aria-keyshortcuts={`Control+${i + 1}`}
             // aria-current tells screen readers which tab is the open page.
             aria-current={page === p.page ? 'page' : undefined}
             className={`tab ${page === p.page ? 'tab-active' : ''}`}
