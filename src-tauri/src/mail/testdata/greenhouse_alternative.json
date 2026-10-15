@@ -1,0 +1,103 @@
+{
+  "id": "18f0a1b2c3d4e5f6",
+  "threadId": "18f0a1b2c3d4e5f6",
+  "labelIds": [
+    "INBOX",
+    "CATEGORY_UPDATES"
+  ],
+  "snippet": "Hi Sam, Thanks for applying to the Software Engineering Intern role.",
+  "internalDate": "1790000000000",
+  "payload": {
+    "mimeType": "multipart/mixed",
+    "filename": "",
+    "headers": [
+      {
+        "name": "From",
+        "value": "Acme Recruiting <no-reply@us.greenhouse-mail.io>"
+      },
+      {
+        "name": "To",
+        "value": "candidate@example.com"
+      },
+      {
+        "name": "Subject",
+        "value": "Thank you for applying to Acme"
+      },
+      {
+        "name": "Content-Type",
+        "value": "multipart/mixed; boundary=\"outer\""
+      }
+    ],
+    "body": {
+      "size": 0
+    },
+    "parts": [
+      {
+        "mimeType": "multipart/alternative",
+        "filename": "",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "multipart/alternative; boundary=\"inner\""
+          }
+        ],
+        "body": {
+          "size": 0
+        },
+        "parts": [
+          {
+            "mimeType": "text/plain",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/plain; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 120,
+              "data": "SGkgU2FtLA0KDQpUaGFua3MgZm9yIGFwcGx5aW5nIHRvIHRoZSBTb2Z0d2FyZSBFbmdpbmVlcmluZyBJbnRlcm4gcm9sZS4NCldlJ2xsIGJlIGluIHRvdWNoLg0KDQotLSBBY21lIFRhbGVudA0K"
+            }
+          },
+          {
+            "mimeType": "text/html",
+            "filename": "",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "text/html; charset=\"UTF-8\""
+              }
+            ],
+            "body": {
+              "size": 90,
+              "data": "PGh0bWw-PGJvZHk-PHA-SFRNTCB2ZXJzaW9uOiB0aGFua3MgZm9yIGFwcGx5aW5nPC9wPjwvYm9keT48L2h0bWw-"
+            }
+          }
+        ]
+      },
+      {
+        "mimeType": "application/pdf",
+        "filename": "offer-letter-template.pdf",
+        "headers": [
+          {
+            "name": "Content-Type",
+            "value": "application/pdf"
+          }
+        ],
+        "body": {
+          "size": 2048,
+          "attachmentId": "ANGjdJ_fake_attachment_id"
+        }
+      },
+      {
+        "mimeType": "text/plain",
+        "filename": "notes.txt",
+        "headers": [],
+        "body": {
+          "size": 10,
+          "data": "JVBERiBmYWtl"
+        }
+      }
+    ]
+  }
+}

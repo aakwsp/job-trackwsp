@@ -2,12 +2,13 @@ mod applications;
 mod db;
 mod gmail;
 mod jobs;
+mod mail;
 mod sync;
 
 use std::time::Duration;
 
 use sqlx::SqlitePool;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 const SYNC_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -196,9 +197,20 @@ async fn gmail_connect(app: tauri::AppHandle) -> Result<String, gmail::GmailErro
         app,
         |app| {
             let creds = gmail_credentials(app)?;
-            gmail::connect(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, |url| {
-                app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
-            })
+            let address =
+                gmail::connect(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, |url| {
+                    app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+                })?;
+            // Start the first poll (the backfill) now rather than at the
+            // next 10-minute tick. Its own thread: connect returns at once,
+            // and the status line follows along via `mail-polled`.
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = poll_mail(&app) {
+                    log::error!("mail poll after connecting failed: {e}");
+                }
+            });
+            Ok(address)
         },
         gmail_join_error,
     )
@@ -247,6 +259,76 @@ async fn gmail_disconnect(app: tauri::AppHandle) -> Result<(), gmail::GmailError
         gmail_join_error,
     )
     .await
+}
+
+/// "last checked hh:mm · n new" for the QUEUE status line.
+#[tauri::command]
+async fn mail_status(app: tauri::AppHandle) -> Result<mail::MailStatus, mail::MailError> {
+    off_main_thread(
+        app,
+        |app| mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>()),
+        |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
+    )
+    .await
+}
+
+/// [ check mail ]: one poll now (or nothing, if one is already running),
+/// then the fresh status. The `mail-polled` event also fires.
+#[tauri::command]
+async fn mail_check(app: tauri::AppHandle) -> Result<mail::MailStatus, mail::MailError> {
+    off_main_thread(
+        app,
+        |app| {
+            let result = poll_mail(app);
+            let status = mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>())?;
+            result.map(|()| status)
+        },
+        |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
+    )
+    .await
+}
+
+/// Un-ignores one email: re-fetched from Gmail by id, since ignored mail is
+/// stored without its content. Refuses blocked mail. For JT-18's recover
+/// action; no UI calls it yet.
+#[tauri::command]
+async fn mail_restore(app: tauri::AppHandle, gmail_id: String) -> Result<(), mail::MailError> {
+    off_main_thread(
+        app,
+        move |app| {
+            let creds = gmail_credentials(app).map_err(mail::MailError::Gmail)?;
+            mail::restore(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, &gmail_id)
+        },
+        |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
+    )
+    .await
+}
+
+/// One poll with everything it needs from managed state, then a
+/// `mail-polled` event so the UI refreshes its status line whichever
+/// trigger started the poll. Blocking.
+fn poll_mail(app: &tauri::AppHandle) -> Result<(), mail::MailError> {
+    let result = mail::poll(
+        &app.state::<gmail::GmailState>(),
+        &app.state::<mail::MailState>(),
+        &app.state::<SqlitePool>(),
+        gmail_credentials(app).ok().as_ref(),
+    );
+    if let Ok(status) = mail::status(&app.state::<mail::MailState>(), &app.state::<SqlitePool>()) {
+        let _ = app.emit("mail-polled", status);
+    }
+    result
+}
+
+/// Polls on app start, then every `POLL_INTERVAL`, on its own thread (like
+/// the sheet sync). Disconnected Gmail makes each poll a quiet no-op.
+fn spawn_mail_poller(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        if let Err(e) = poll_mail(&app) {
+            log::error!("mail poll failed: {e}");
+        }
+        std::thread::sleep(mail::POLL_INTERVAL);
+    });
 }
 
 /// Opens a posting in the system browser. Done from Rust rather than
@@ -308,7 +390,10 @@ pub fn run() {
             gmail_connect,
             gmail_cancel,
             gmail_status,
-            gmail_disconnect
+            gmail_disconnect,
+            mail_status,
+            mail_check,
+            mail_restore
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -331,6 +416,8 @@ pub fn run() {
             spawn_background_sync(pool.clone());
             app.manage(pool);
             app.manage(gmail::GmailState::new(Box::new(gmail::store::KeyringStore)));
+            app.manage(mail::MailState::default());
+            spawn_mail_poller(app.handle().clone());
 
             Ok(())
         })

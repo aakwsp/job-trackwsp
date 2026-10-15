@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Application, Job, SyncCounts } from './types'
+import type { Application, Job, MailStatus, SyncCounts } from './types'
 
 // Thin typed wrappers around the Tauri commands registered in
 // src-tauri/src/lib.rs. Argument keys are camelCase here: Tauri converts
@@ -44,3 +44,11 @@ export const gmailCancel = () => invoke<void>('gmail_cancel')
 export const gmailStatus = () => invoke<string | null>('gmail_status')
 
 export const gmailDisconnect = () => invoke<void>('gmail_disconnect')
+
+// Mail polling (JT-14). Polls also run on their own (app start, every 10
+// minutes); each one emits a `mail-polled` event with the new status.
+export const mailStatus = () => invoke<MailStatus>('mail_status')
+
+// [ check mail ]: polls now (or waits on nothing if one is running) and
+// resolves with the status afterwards.
+export const mailCheck = () => invoke<MailStatus>('mail_check')

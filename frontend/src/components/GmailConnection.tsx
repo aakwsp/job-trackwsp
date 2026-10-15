@@ -1,4 +1,5 @@
 import type { GmailStatus } from '../lib/useGmail'
+import type { MailStatus } from '../types'
 import { primaryButton } from './record/parts'
 
 // The job account's connection status, from design/inbox/InboxDisconnected
@@ -13,9 +14,46 @@ type Props = {
   onDisconnect: () => void
 }
 
+// "412 emails · 3 new since last check · last checked 09:42" (JT-14),
+// from the board's connected state: values in the text colour, the
+// separators dim.
+export function MailStatusLine({ mail, busy }: { mail: MailStatus | null; busy: boolean }) {
+  if (busy) return <>checking mail…</>
+  if (!mail?.last_checked_at) return <>not checked yet</>
+  const dot = <span className="text-text-dim"> · </span>
+  return (
+    <>
+      <span className="text-text">{mail.total}</span> emails{dot}
+      <span className="text-text">{mail.last_new}</span> new since last check{dot}
+      last checked <span className="text-text">{hhmm(mail.last_checked_at)}</span>
+    </>
+  )
+}
+
+// Local 24-hour time. `toLocaleTimeString` with explicit options, so it's
+// "09:42" rather than whatever the locale's default (with seconds, AM/PM)
+// would be.
+function hhmm(iso: string): string {
+  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+// [ check mail ] at the hero's right edge, as on the board: 36px, outlined.
+export function CheckMailButton({ busy, onCheck }: { busy: boolean; onCheck: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onCheck}
+      disabled={busy}
+      className="inline-flex h-9 shrink-0 cursor-pointer items-center border border-rule-strong px-3.5 text-[0.71875rem] text-text hover:border-text-muted hover:bg-bg-hover disabled:cursor-wait disabled:opacity-50"
+    >
+      {busy ? '[ checking… ]' : '[ check mail ]'}
+    </button>
+  )
+}
+
 // The hero's status line (where the subtitle goes). Disconnected:
 // "gmail not connected · nothing new is being checked". Connected:
-// "connected as <address>  [ disconnect ]".
+// "connected as <address>  [ disconnect ]", under the mail status line.
 export function GmailStatusLine({ status, busy, onDisconnect }: Props) {
   if (status.kind === 'checking') return <>checking gmail…</>
   if (status.kind === 'disconnected')
