@@ -92,5 +92,6 @@ export type Application = {
 export type MailStatus = {
   last_checked_at: string | null // full ISO timestamp, UTC; null before the first poll
   last_new: number // messages from that poll that passed the filter
+  total: number // every stored email, whatever its status
   checking: boolean // a poll is running now
 }

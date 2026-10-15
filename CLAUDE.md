@@ -71,10 +71,17 @@ insert a new row.
 - `emails` — Gmail messages from the job account, unique on `gmail_id`
   (JT-14, `src-tauri/src/mail/`). Each is stored once with its decoded
   plain-text body (`text/plain` preferred, HTML stripped otherwise), then
-  filtered at once: `status` is `pending` (on to the LLM, JT-15) or `ignored`,
-  and `filter_reason` says why either way. The allow list wins over the
-  ignore list; both are constants in `mail/filter.rs` for now (editable in
-  JT-33). Polling: on start, every 10 minutes, and on [ check mail ], one
+  filtered at once: `status` is `pending` (on to the LLM, JT-15), `ignored`,
+  or `blocked`, and `filter_reason` says why either way. Order: the block
+  list (the user's part-time job, `ams.queensu.ca` and Dayforce's `notify@`;
+  nothing overrides it), then the allow list, which wins over the ignore
+  list. All three are constants in `mail/filter.rs` for now (editable in
+  JT-33). **Ignored and blocked mail keeps only `gmail_id`, `from_addr`,
+  `subject`, `received_at` and `filter_reason`**: body, snippet, recipient,
+  thread and labels are never stored (or are cleared by `mail::refilter`,
+  which re-applies the rules to stored mail on start and before each poll).
+  Un-ignoring re-fetches from Gmail (`mail::restore`); blocked mail can't be
+  restored. The DB runs with `secure_delete` so cleared text is really gone. Polling: on start, every 10 minutes, and on [ check mail ], one
   at a time; the first poll backfills since 2026-08-01, later ones use
   `history.list` from `settings.mail_history_id` (404 → a search since the
   last successful poll). Gmail disconnected = no polling, no errors.

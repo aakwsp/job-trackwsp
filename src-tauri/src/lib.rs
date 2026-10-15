@@ -288,6 +288,22 @@ async fn mail_check(app: tauri::AppHandle) -> Result<mail::MailStatus, mail::Mai
     .await
 }
 
+/// Un-ignores one email: re-fetched from Gmail by id, since ignored mail is
+/// stored without its content. Refuses blocked mail. For JT-18's recover
+/// action; no UI calls it yet.
+#[tauri::command]
+async fn mail_restore(app: tauri::AppHandle, gmail_id: String) -> Result<(), mail::MailError> {
+    off_main_thread(
+        app,
+        move |app| {
+            let creds = gmail_credentials(app).map_err(mail::MailError::Gmail)?;
+            mail::restore(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, &gmail_id)
+        },
+        |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
+    )
+    .await
+}
+
 /// One poll with everything it needs from managed state, then a
 /// `mail-polled` event so the UI refreshes its status line whichever
 /// trigger started the poll. Blocking.
@@ -376,7 +392,8 @@ pub fn run() {
             gmail_status,
             gmail_disconnect,
             mail_status,
-            mail_check
+            mail_check,
+            mail_restore
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

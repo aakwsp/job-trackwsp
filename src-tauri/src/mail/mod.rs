@@ -47,6 +47,8 @@ pub enum MailError {
     Gmail(GmailError),
     Api(ApiError),
     Db(sqlx::Error),
+    /// A request that isn't allowed (restoring blocked mail, ...).
+    Refused(String),
 }
 
 impl std::fmt::Display for MailError {
@@ -55,6 +57,7 @@ impl std::fmt::Display for MailError {
             MailError::Gmail(e) => write!(f, "{e}"),
             MailError::Api(e) => write!(f, "{e}"),
             MailError::Db(e) => write!(f, "database error: {e}"),
+            MailError::Refused(m) => write!(f, "{m}"),
         }
     }
 }
@@ -92,6 +95,8 @@ pub struct MailStatus {
     pub last_checked_at: Option<String>,
     /// Messages from that poll that passed the filter (status pending).
     pub last_new: u32,
+    /// Every stored email, whatever its status.
+    pub total: u32,
     /// A poll is running right now.
     pub checking: bool,
 }
@@ -100,6 +105,7 @@ pub fn status(mail: &MailState, pool: &SqlitePool) -> Result<MailStatus, MailErr
     Ok(MailStatus {
         last_checked_at: get_setting(pool, LAST_POLL_KEY)?,
         last_new: get_setting(pool, LAST_NEW_KEY)?.and_then(|n| n.parse().ok()).unwrap_or(0),
+        total: block_on(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM emails").fetch_one(pool))? as u32,
         checking: mail.running.load(Ordering::SeqCst),
     })
 }
@@ -111,10 +117,12 @@ pub fn poll(gmail: &GmailState, mail: &MailState, pool: &SqlitePool, creds: Opti
     if mail.running.swap(true, Ordering::SeqCst) {
         return Ok(());
     }
-    let result = match creds {
+    // Rules first, connected or not: mail already stored is brought in
+    // line with the current filter before anything else happens.
+    let result = refilter(pool).and_then(|_| match creds {
         Some(creds) => poll_inner(gmail, pool, creds),
         None => Ok(()),
-    };
+    });
     mail.running.store(false, Ordering::SeqCst);
     result
 }
@@ -203,8 +211,13 @@ enum Stored {
 
 /// Decode, filter and insert one message. `INSERT OR IGNORE` on the unique
 /// `gmail_id` makes a second store of the same message a no-op.
+///
+/// Ignored and blocked mail never has its content stored: only who sent
+/// it, when, the subject and the reason. If it's restored later, it's
+/// fetched from Gmail again (`restore`).
 fn store(pool: &SqlitePool, msg: &mime::Message, companies: &[String]) -> Result<Stored, MailError> {
     let d = mime::decode(msg);
+    let labels = serde_json::to_string(&msg.label_ids).expect("labels serialize");
     let verdict = filter::classify(
         &filter::Input {
             from: d.from.as_deref(),
@@ -213,10 +226,10 @@ fn store(pool: &SqlitePool, msg: &mime::Message, companies: &[String]) -> Result
         },
         companies,
     );
-    let (status, reason, outcome) = match verdict {
-        filter::Verdict::Pending(r) => ("pending", r, Stored::Pending),
-        filter::Verdict::Ignored(r) => ("ignored", r, Stored::Ignored),
-    };
+    let keep = matches!(verdict, filter::Verdict::Pending(_));
+    // `.then(..)`: Some(value) for pending mail, None (stored as NULL)
+    // for ignored and blocked.
+    let content = |v: Option<&str>| keep.then(|| v.map(str::to_string)).flatten();
     let received = msg
         .internal_date
         .as_deref()
@@ -230,21 +243,182 @@ fn store(pool: &SqlitePool, msg: &mime::Message, companies: &[String]) -> Result
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&msg.id)
-        .bind(&msg.thread_id)
+        .bind(content(msg.thread_id.as_deref()))
         .bind(&d.from)
-        .bind(&d.to)
+        .bind(content(d.to.as_deref()))
         .bind(&d.subject)
-        .bind(&msg.snippet)
+        .bind(content(Some(&msg.snippet)))
         .bind(received)
-        .bind(&d.body_text)
-        .bind(serde_json::to_string(&msg.label_ids).expect("labels serialize"))
-        .bind(status)
-        .bind(&reason)
+        .bind(content(Some(&d.body_text)))
+        .bind(content(Some(&labels)))
+        .bind(verdict.status())
+        .bind(verdict.reason())
         .bind(now_iso())
         .execute(pool),
     )?
     .rows_affected();
-    Ok(if inserted == 0 { Stored::AlreadyThere } else { outcome })
+    Ok(match (inserted, keep) {
+        (0, _) => Stored::AlreadyThere,
+        (_, true) => Stored::Pending,
+        (_, false) => Stored::Ignored,
+    })
+}
+
+/// Counts from one `refilter` pass.
+#[derive(Debug, Default, PartialEq)]
+pub struct Refiltered {
+    /// Pending rows the current rules now ignore or block.
+    pub newly_filtered: u32,
+    /// Ignored rows the current rules now block.
+    pub newly_blocked: u32,
+    /// Rows whose content was cleared in this pass.
+    pub scrubbed: u32,
+}
+
+/// Re-applies the current filter to mail already stored, so a rule added
+/// after mail arrived still applies to it. Runs on app start (connected or
+/// not) and before every poll.
+///
+/// - pending rows are re-classified from what's stored (sender, labels).
+///   The List-Unsubscribe header isn't stored, but that rule hasn't
+///   changed for rows that already passed it.
+/// - ignored rows only move to blocked: there's not enough left of them
+///   to re-check anything else, and restoring is `restore`'s job.
+/// - every ignored or blocked row has its content cleared. Idempotent.
+///
+/// The database runs with `secure_delete` (see `db::connect`), so cleared
+/// text is overwritten in the file, and the WAL is truncated after any
+/// clearing so old copies don't linger there either.
+pub fn refilter(pool: &SqlitePool) -> Result<Refiltered, MailError> {
+    let mut out = Refiltered::default();
+    let companies = company_domains(pool)?;
+
+    let pending: Vec<(i64, Option<String>, Option<String>)> =
+        block_on(sqlx::query_as("SELECT id, from_addr, label_ids FROM emails WHERE status = 'pending'").fetch_all(pool))?;
+    for (id, from, labels) in pending {
+        let labels: Vec<String> = labels.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
+        let verdict = filter::classify(
+            &filter::Input {
+                from: from.as_deref(),
+                list_unsubscribe: false,
+                label_ids: &labels,
+            },
+            &companies,
+        );
+        if !matches!(verdict, filter::Verdict::Pending(_)) {
+            set_verdict(pool, id, &verdict)?;
+            out.newly_filtered += 1;
+        }
+    }
+
+    let ignored: Vec<(i64, Option<String>)> =
+        block_on(sqlx::query_as("SELECT id, from_addr FROM emails WHERE status = 'ignored'").fetch_all(pool))?;
+    for (id, from) in ignored {
+        let verdict = filter::classify(
+            &filter::Input {
+                from: from.as_deref(),
+                list_unsubscribe: false,
+                label_ids: &[],
+            },
+            &[],
+        );
+        if matches!(verdict, filter::Verdict::Blocked(_)) {
+            set_verdict(pool, id, &verdict)?;
+            out.newly_blocked += 1;
+        }
+    }
+
+    out.scrubbed = block_on(
+        sqlx::query(
+            "UPDATE emails
+             SET thread_id = NULL, to_addr = NULL, snippet = NULL, body_text = NULL, label_ids = NULL
+             WHERE status IN ('ignored', 'blocked')
+               AND (thread_id IS NOT NULL OR to_addr IS NOT NULL OR snippet IS NOT NULL
+                    OR body_text IS NOT NULL OR label_ids IS NOT NULL)",
+        )
+        .execute(pool),
+    )?
+    .rows_affected() as u32;
+
+    if out.scrubbed > 0 {
+        block_on(sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool))?;
+        log::info!(
+            "mail refilter: {} newly filtered, {} newly blocked, {} cleared",
+            out.newly_filtered,
+            out.newly_blocked,
+            out.scrubbed
+        );
+    }
+    Ok(out)
+}
+
+fn set_verdict(pool: &SqlitePool, id: i64, verdict: &filter::Verdict) -> Result<(), MailError> {
+    block_on(
+        sqlx::query("UPDATE emails SET status = ?, filter_reason = ? WHERE id = ?")
+            .bind(verdict.status())
+            .bind(verdict.reason())
+            .bind(id)
+            .execute(pool),
+    )?;
+    Ok(())
+}
+
+/// Un-ignores one email: fetches it from Gmail again by `gmail_id` (its
+/// content was cleared when it was ignored) and stores it as pending.
+/// Blocked mail can't be restored. For JT-18's "recover" action.
+pub fn restore(gmail_state: &GmailState, pool: &SqlitePool, creds: &ClientCredentials, gmail_id: &str) -> Result<(), MailError> {
+    let status: Option<String> = block_on(
+        sqlx::query_scalar("SELECT status FROM emails WHERE gmail_id = ?")
+            .bind(gmail_id)
+            .fetch_optional(pool),
+    )?;
+    match status.as_deref() {
+        Some("ignored") => {}
+        Some("blocked") => return Err(MailError::Refused("blocked mail can't be restored".into())),
+        Some(_) => return Ok(()), // already pending (or further along)
+        None => return Err(MailError::Refused(format!("no stored email {gmail_id}"))),
+    }
+    let token = gmail::access_token(gmail_state, pool, creds).map_err(MailError::Gmail)?;
+    let http = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| ApiError::Http(e.to_string()))?;
+    let msg = api::get_message(&http, token.secret(), gmail_id)?;
+    apply_restore(pool, &msg)
+}
+
+/// The DB half of `restore`, split out so it can be tested without Gmail.
+/// Re-checks the block list on the fresh copy: a restore never un-blocks.
+fn apply_restore(pool: &SqlitePool, msg: &mime::Message) -> Result<(), MailError> {
+    let d = mime::decode(msg);
+    let verdict = filter::classify(
+        &filter::Input {
+            from: d.from.as_deref(),
+            list_unsubscribe: false,
+            label_ids: &[],
+        },
+        &[],
+    );
+    if matches!(verdict, filter::Verdict::Blocked(_)) {
+        return Err(MailError::Refused("blocked mail can't be restored".into()));
+    }
+    block_on(
+        sqlx::query(
+            "UPDATE emails
+             SET thread_id = ?, to_addr = ?, snippet = ?, body_text = ?, label_ids = ?,
+                 status = 'pending', filter_reason = 'restored by you', fetched_at = ?
+             WHERE gmail_id = ?",
+        )
+        .bind(&msg.thread_id)
+        .bind(&d.to)
+        .bind(&msg.snippet)
+        .bind(&d.body_text)
+        .bind(serde_json::to_string(&msg.label_ids).expect("labels serialize"))
+        .bind(now_iso())
+        .bind(&msg.id)
+        .execute(pool),
+    )?;
+    Ok(())
 }
 
 /// Which of `ids` are already in `emails`. One query: the ids go in as a
@@ -407,9 +581,115 @@ mod tests {
         assert_eq!(rows[0].2.as_deref(), Some("2026-09-21T14:13:20Z"));
         assert_eq!(rows[0].3.as_deref(), Some(r#"["INBOX","CATEGORY_UPDATES"]"#));
         assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("ignored", "newsletter: list-unsubscribe header"));
+        // The ignored one was stored without its content.
+        assert_eq!(rows[1].3, None);
+        let (body, snippet, subject): (Option<String>, Option<String>, Option<String>) = block_on(
+            sqlx::query_as("SELECT body_text, snippet, subject FROM emails WHERE status = 'ignored'").fetch_one(&pool),
+        )
+        .unwrap();
+        assert_eq!((body, snippet), (None, None));
+        assert_eq!(subject.as_deref(), Some("This week in tech"));
 
         let stored = stored_ids(&pool, &["18f0a1b2c3d4e5f6".into(), "unknown".into()]).unwrap();
         assert_eq!(stored, HashSet::from(["18f0a1b2c3d4e5f6".to_string()]));
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Inserts a pending row the way the old (pre-block) code stored it:
+    /// with its full content.
+    fn insert_pending(pool: &SqlitePool, gmail_id: &str, from: &str) {
+        block_on(
+            sqlx::query(
+                "INSERT INTO emails (gmail_id, thread_id, from_addr, to_addr, subject, snippet,
+                                     body_text, label_ids, status, filter_reason)
+                 VALUES (?, 't', ?, 'me@example.com', 'subject', 'snippet', 'private body',
+                         '[\"INBOX\"]', 'pending', 'no rule matched')",
+            )
+            .bind(gmail_id)
+            .bind(from)
+            .execute(pool),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn refilter_blocks_and_clears_existing_rows() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).expect("connect");
+        insert_pending(&pool, "ams1", "Shift Lead <lead@ams.queensu.ca>");
+        insert_pending(&pool, "ms1", "account-security-noreply@accountprotection.microsoft.com");
+        insert_pending(&pool, "ok1", "Jane <jane@startup.example.com>");
+        // Already ignored under an old rule, content still there.
+        insert_pending(&pool, "ams2", "x@ams.queensu.ca");
+        block_on(sqlx::query("UPDATE emails SET status = 'ignored' WHERE gmail_id = 'ams2'").execute(&pool)).unwrap();
+
+        let r = refilter(&pool).unwrap();
+        assert_eq!(
+            r,
+            Refiltered {
+                newly_filtered: 2,
+                newly_blocked: 1,
+                scrubbed: 3
+            }
+        );
+
+        // gmail_id, status, filter_reason, body_text, snippet, label_ids
+        type Row = (String, String, String, Option<String>, Option<String>, Option<String>);
+        let rows: Vec<Row> = block_on(
+            sqlx::query_as(
+                "SELECT gmail_id, status, filter_reason, body_text, snippet, label_ids FROM emails ORDER BY gmail_id",
+            )
+            .fetch_all(&pool),
+        )
+        .unwrap();
+        let get = |id: &str| rows.iter().find(|r| r.0 == id).unwrap().clone();
+        assert_eq!(get("ams1").1, "blocked");
+        assert_eq!(get("ams1").2, "blocked domain: ams.queensu.ca");
+        assert_eq!(get("ams2").1, "blocked");
+        assert_eq!(get("ms1").1, "ignored");
+        for id in ["ams1", "ams2", "ms1"] {
+            let r = get(id);
+            assert_eq!((r.3, r.4, r.5), (None, None, None), "{id} still has content");
+        }
+        // The legitimate one is untouched.
+        assert_eq!(get("ok1").1, "pending");
+        assert_eq!(get("ok1").3.as_deref(), Some("private body"));
+
+        // Idempotent.
+        assert_eq!(refilter(&pool).unwrap(), Refiltered::default());
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restore_refetches_but_never_unblocks() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).expect("connect");
+        let gh: mime::Message = serde_json::from_str(include_str!("testdata/greenhouse_alternative.json")).unwrap();
+        // Stored ignored with content cleared, as `store` would.
+        block_on(
+            sqlx::query(
+                "INSERT INTO emails (gmail_id, from_addr, subject, status, filter_reason)
+                 VALUES (?, 'x@us.greenhouse-mail.io', 'Thank you', 'ignored', 'sent by you')",
+            )
+            .bind(&gh.id)
+            .execute(&pool),
+        )
+        .unwrap();
+        apply_restore(&pool, &gh).unwrap();
+        let (status, body): (String, Option<String>) =
+            block_on(sqlx::query_as("SELECT status, body_text FROM emails WHERE gmail_id = ?").bind(&gh.id).fetch_one(&pool))
+                .unwrap();
+        assert_eq!(status, "pending");
+        assert!(body.unwrap().starts_with("Hi Sam,"));
+
+        // A fresh copy that turns out to be from a blocked sender is refused.
+        let mut blocked = gh;
+        blocked.payload.as_mut().unwrap().headers[0].value = "lead@ams.queensu.ca".into();
+        assert!(matches!(apply_restore(&pool, &blocked), Err(MailError::Refused(_))));
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);

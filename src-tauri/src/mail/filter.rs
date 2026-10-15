@@ -2,11 +2,28 @@
 //! reaches the LLM (JT-14). Each message ends up `pending` (on to the LLM in
 //! JT-15) or `ignored`, with a reason either way.
 //!
-//! Order: the allow list is checked first and wins. Then the ignore list.
-//! Anything on neither goes to the LLM, which can still call it "not job
+//! Order:
+//! 1. The block list. Mail that must never reach the LLM, whatever else
+//!    is true of it (the user's current part-time job). Nothing overrides it.
+//! 2. The allow list (ATS senders, applied companies). Wins over 3.
+//! 3. The ignore list.
+//!
+//! Anything else goes to the LLM, which can still call it "not job
 //! related" (JT-15).
 //!
+//! Blocked and ignored mail is stored with its body, snippet and other
+//! content cleared (see `mail::store`), keeping only who, when, the subject
+//! and the reason.
+//!
 //! The lists are constants here for now; JT-33 makes them editable.
+
+/// Blocked domains (and their subdomains): mail from the user's current
+/// part-time job. Checked before the allow list, which can't override it.
+pub const BLOCK_DOMAINS: &[&str] = &["ams.queensu.ca"];
+
+/// Blocked single senders. Just Dayforce's `notify@`: Dayforce is also an
+/// ATS some employers use for applications, so the domain stays open.
+pub const BLOCK_ADDRESSES: &[&str] = &["notify@dayforce.com"];
 
 /// ATS and assessment senders. Matched against the sender's domain and
 /// all its parent domains, so `us.greenhouse-mail.io` matches
@@ -27,23 +44,50 @@ pub const ALLOW_DOMAINS: &[&str] = &[
 /// per-tenant hosts like `myworkday.com`, `acme.myworkdayjobs.com`, ...
 pub const ALLOW_DOMAIN_CONTAINS: &[&str] = &["myworkday"];
 
-/// Google account and security mail.
+/// Account and security mail (Google, Microsoft).
 pub const IGNORE_ADDRESSES: &[&str] = &[
     "no-reply@accounts.google.com",
     "noreply@accounts.google.com",
     "mail-noreply@google.com",
     "forwarding-noreply@google.com",
+    "account-security-noreply@accountprotection.microsoft.com",
 ];
 
 /// Whole domains to ignore (and their subdomains): Google account mail
 /// and newsletter platforms.
-pub const IGNORE_DOMAINS: &[&str] = &["accounts.google.com", "substack.com", "beehiiv.com", "mcsv.net", "mailchimpapp.net"];
+pub const IGNORE_DOMAINS: &[&str] = &[
+    "accounts.google.com",
+    "substack.com",
+    "beehiiv.com",
+    "mcsv.net",
+    "mailchimpapp.net",
+    "citationcanada.com",
+];
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Verdict {
     /// On to the LLM. The reason says why it was let through.
     Pending(String),
     Ignored(String),
+    /// Like ignored, but final: never restored, never sent to the LLM.
+    Blocked(String),
+}
+
+impl Verdict {
+    /// The `emails.status` value.
+    pub fn status(&self) -> &'static str {
+        match self {
+            Verdict::Pending(_) => "pending",
+            Verdict::Ignored(_) => "ignored",
+            Verdict::Blocked(_) => "blocked",
+        }
+    }
+
+    pub fn reason(&self) -> &str {
+        match self {
+            Verdict::Pending(r) | Verdict::Ignored(r) | Verdict::Blocked(r) => r,
+        }
+    }
 }
 
 /// What the filter looks at for one message.
@@ -63,7 +107,16 @@ pub fn classify(input: &Input, company_domains: &[String]) -> Verdict {
     let address = input.from.map(sender_address).unwrap_or_default();
     let domain = address.rsplit_once('@').map(|(_, d)| d.to_string()).unwrap_or_default();
 
-    // Allow first: it wins over everything below.
+    // Blocked before anything: the allow list must not be able to let it
+    // through.
+    if let Some(d) = BLOCK_DOMAINS.iter().find(|d| is_domain_or_sub(&domain, d)) {
+        return Verdict::Blocked(format!("blocked domain: {d}"));
+    }
+    if BLOCK_ADDRESSES.contains(&address.as_str()) {
+        return Verdict::Blocked(format!("blocked sender: {address}"));
+    }
+
+    // Then allow: it wins over everything below.
     if let Some(d) = ALLOW_DOMAINS.iter().find(|d| is_domain_or_sub(&domain, d)) {
         return Verdict::Pending(format!("ats: {d}"));
     }
@@ -78,7 +131,7 @@ pub fn classify(input: &Input, company_domains: &[String]) -> Verdict {
         return Verdict::Ignored("sent by you".into());
     }
     if IGNORE_ADDRESSES.contains(&address.as_str()) {
-        return Verdict::Ignored(format!("google account mail: {address}"));
+        return Verdict::Ignored(format!("account mail: {address}"));
     }
     if let Some(d) = IGNORE_DOMAINS.iter().find(|d| is_domain_or_sub(&domain, d)) {
         return Verdict::Ignored(format!("ignored domain: {d}"));
@@ -190,7 +243,7 @@ mod tests {
         // Google application, Google security mail: still ignored.
         assert_eq!(
             run("Google <no-reply@accounts.google.com>", false, &[], &["google.com"]),
-            Verdict::Ignored("google account mail: no-reply@accounts.google.com".into())
+            Verdict::Ignored("account mail: no-reply@accounts.google.com".into())
         );
     }
 
@@ -209,6 +262,45 @@ mod tests {
         assert_eq!(
             run("Jane <jane@startup.example.com>", false, &["INBOX"], &[]),
             Verdict::Pending("no rule matched".into())
+        );
+    }
+
+    #[test]
+    fn blocked_beats_everything_including_allow() {
+        // The part-time job's domain and its subdomains.
+        assert_eq!(
+            run("Shift Lead <lead@ams.queensu.ca>", false, &["INBOX"], &[]),
+            Verdict::Blocked("blocked domain: ams.queensu.ca".into())
+        );
+        assert_eq!(
+            run("x@hr.ams.queensu.ca", false, &[], &[]),
+            Verdict::Blocked("blocked domain: ams.queensu.ca".into())
+        );
+        // Even if it looked like an applied company's domain.
+        assert!(matches!(
+            run("x@ams.queensu.ca", false, &[], &["ams.queensu.ca"]),
+            Verdict::Blocked(_)
+        ));
+        // Only Dayforce's notify@ is blocked; other Dayforce senders (an
+        // employer's application mail) go through the normal rules.
+        assert_eq!(
+            run("Dayforce <notify@dayforce.com>", false, &[], &[]),
+            Verdict::Blocked("blocked sender: notify@dayforce.com".into())
+        );
+        assert!(pending(run("careers@dayforce.com", false, &[], &[])));
+        // queensu.ca outside the AMS is not blocked.
+        assert!(pending(run("registrar@queensu.ca", false, &[], &[])));
+    }
+
+    #[test]
+    fn new_ignores() {
+        assert_eq!(
+            run("Microsoft <account-security-noreply@accountprotection.microsoft.com>", false, &[], &[]),
+            Verdict::Ignored("account mail: account-security-noreply@accountprotection.microsoft.com".into())
+        );
+        assert_eq!(
+            run("info@citationcanada.com", false, &[], &[]),
+            Verdict::Ignored("ignored domain: citationcanada.com".into())
         );
     }
 

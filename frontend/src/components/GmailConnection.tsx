@@ -14,16 +14,18 @@ type Props = {
   onDisconnect: () => void
 }
 
-// "last checked 09:42 · 3 new" (JT-14), from the board's connected state:
-// values in the text colour, the separator dim.
+// "412 emails · 3 new since last check · last checked 09:42" (JT-14),
+// from the board's connected state: values in the text colour, the
+// separators dim.
 export function MailStatusLine({ mail, busy }: { mail: MailStatus | null; busy: boolean }) {
   if (busy) return <>checking mail…</>
   if (!mail?.last_checked_at) return <>not checked yet</>
+  const dot = <span className="text-text-dim"> · </span>
   return (
     <>
+      <span className="text-text">{mail.total}</span> emails{dot}
+      <span className="text-text">{mail.last_new}</span> new since last check{dot}
       last checked <span className="text-text">{hhmm(mail.last_checked_at)}</span>
-      <span className="text-text-dim"> · </span>
-      <span className="text-text">{mail.last_new}</span> new
     </>
   )
 }

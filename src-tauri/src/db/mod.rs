@@ -27,7 +27,11 @@ pub async fn connect(app_data_dir: &Path) -> sqlx::Result<SqlitePool> {
     let options = SqliteConnectOptions::from_str(&db_path.to_string_lossy())?
         .create_if_missing(true)
         .journal_mode(SqliteJournalMode::Wal)
-        .foreign_keys(true);
+        .foreign_keys(true)
+        // Overwrite deleted or replaced content with zeros instead of
+        // leaving it in free pages. Ignored and blocked mail has its body
+        // cleared (mail::refilter); this makes the clearing real on disk.
+        .pragma("secure_delete", "ON");
 
     let pool = SqlitePoolOptions::new()
         .max_connections(5)
