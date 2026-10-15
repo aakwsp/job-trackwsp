@@ -5,11 +5,13 @@ export const STALE_DAYS = 30
 
 // What the app starts with (when nothing is saved) and what the top-level
 // [ clear ] goes back to: nothing checked, so nothing is hidden.
+// Removed postings (gone from the sheet, JT-26) are excluded unless you
+// choose otherwise, so the list matches the sheet out of the box.
 export const DEFAULT_FILTERS: Filters = {
   query: '',
   city: '',
   statuses: {},
-  flags: {},
+  flags: { removed: 'exclude' },
 }
 
 // 'YYYY-MM-DD' → whole days since the epoch. Going through Date.UTC (not
@@ -161,6 +163,16 @@ export const FLAGS: Flag[] = [
     hint: 'borderline',
     test: (job) => job.borderline,
   },
+  {
+    // Gone from the sheet (JT-26). Excluded by default (DEFAULT_FILTERS), so
+    // the square only shows once you include these rows.
+    key: 'removed',
+    color: 'dim',
+    label: 'removed',
+    short: 'RM',
+    hint: 'no longer in the sheet',
+    test: (job) => job.removed_at !== null,
+  },
 ]
 
 export function activeFlags(job: Job): Flag[] {
@@ -246,6 +258,7 @@ export function postingEvents(job: Job): PostingEvent[] {
     // The flag is set at discovery, so first_seen is when it happened.
     if (job.borderline) out.push({ date: job.first_seen, label: 'flagged borderline', color: 'blue' })
   }
+  if (job.removed_at) out.push({ date: localYmd(job.removed_at), label: 'removed from sheet', color: 'dim' })
   if (job.deadline) {
     const entered = addDays(job.deadline, -CLOSING_SOON_DAYS)
     // Only once it has actually happened; this is a history, not a forecast.

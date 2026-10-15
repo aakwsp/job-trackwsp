@@ -25,6 +25,10 @@ pub struct JobRow {
     pub source: Option<String>,
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
+    /// When the posting disappeared from the sheet (JT-26); None while it's
+    /// listed. Removed rows are still returned: JOBS hides them with a
+    /// filter, and PIPELINE's record needs them.
+    pub removed_at: Option<String>,
     pub applied: bool,
     /// `applications.applied_at`, full ISO timestamp; None when not applied.
     pub applied_at: Option<String>,
@@ -91,7 +95,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
     let rows = sqlx::query_as::<_, JobRow>(
         "SELECT j.id, j.company, j.title, j.city, j.req_id, j.url, j.deadline,
                 j.posting_status, j.borderline, j.borderline_reason, j.source,
-                j.first_seen, j.last_seen,
+                j.first_seen, j.last_seen, j.removed_at,
                 a.id IS NOT NULL AS applied, a.applied_at, a.status AS app_status,
                 COALESCE(a.notes, n.body) AS notes
          FROM jobs j
