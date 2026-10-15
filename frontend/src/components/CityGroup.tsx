@@ -26,8 +26,9 @@ export default function CityGroup({
     <section>
       {/* The band is the collapse control: a <button> so it gets keyboard
           focus and Enter/Space for free.
-          `sticky top-0` pins it to the top of the scrolling <main> while
-          you're inside this section. A sticky element can't leave its
+          `sticky` pins it under the sticky toolbar while you're inside this
+          section; `top-(--toolbar-h)` is Tailwind for `top:
+          var(--toolbar-h)`, the toolbar's measured height (set in App). A sticky element can't leave its
           parent, so when the <section> scrolls away the band goes with it
           and the next city's band takes over. `z-10` keeps it above the
           cards (whose stripe is a positioned ::before). */}
@@ -35,7 +36,7 @@ export default function CityGroup({
         type="button"
         onClick={() => onToggle(city)}
         aria-expanded={!collapsed}
-        className="band sticky top-0 z-10 flex w-full cursor-pointer items-center justify-between hover:text-text"
+        className="band sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text"
       >
         <span>
           {collapsed ? '+ ' : '- '}// {city.toLowerCase()}
@@ -43,26 +44,32 @@ export default function CityGroup({
         <span className="text-text-dim">{jobs.length}</span>
       </button>
 
-      {!collapsed &&
-        (view === 'line' ? (
-          <div>
-            {jobs.map((job) => (
-              <JobLine key={job.id} job={job} onSelect={onSelect} onOpen={onOpen} />
-            ))}
-          </div>
-        ) : (
-          <div className={`grid ${GRID_COLS[view]}`}>
-            {jobs.map((job) => (
-              <JobCard
-                key={job.id}
-                job={job}
-                compact={view === 'compact'}
-                onSelect={onSelect}
-                onOpen={onOpen}
-              />
-            ))}
-          </div>
-        ))}
+      {/* Kept mounted while collapsed so it can animate closed (height +
+          fade, `.reveal` in index.css); `inert` takes the hidden cards out
+          of Tab order. */}
+      <div className="reveal" data-open={!collapsed} inert={collapsed}>
+        <div className="reveal-inner">
+          {view === 'line' ? (
+            <div>
+              {jobs.map((job) => (
+                <JobLine key={job.id} job={job} onSelect={onSelect} onOpen={onOpen} />
+              ))}
+            </div>
+          ) : (
+            <div className={`grid ${GRID_COLS[view]}`}>
+              {jobs.map((job) => (
+                <JobCard
+                  key={job.id}
+                  job={job}
+                  compact={view === 'compact'}
+                  onSelect={onSelect}
+                  onOpen={onOpen}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </section>
   )
 }

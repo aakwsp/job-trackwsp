@@ -72,23 +72,30 @@ export default function FilterMenu({ filters, onChange, counts }: Props) {
         [ filters{count > 0 && ` · ${count}`} ]
       </button>
 
-      {open && (
-        // `top-full` = directly under the trigger; `mt-2` leaves a small gap.
-        // `z-20` puts it above the sticky city bands (`z-10`).
-        <div
-          id={panelId}
-          className="absolute top-full left-0 z-20 mt-2 w-72 border border-rule bg-bg-card"
-        >
-          <Group title="status" rows={STATUS_ROWS} filters={filters} counts={counts} onChange={onChange} />
-          <Group title="flags" rows={FLAG_ROWS} filters={filters} counts={counts} onChange={onChange} />
+      {/* Always mounted so it can animate both ways: `.reveal` (index.css)
+          grows it from zero height and fades it in when `data-open` flips.
+          `inert` while closed takes it out of Tab order and clicks, since
+          it's still in the page.
+          `top-full` = directly under the trigger; `mt-2` leaves a small gap.
+          `z-20` puts it above the sticky city bands (`z-10`). */}
+      <div id={panelId} className="reveal absolute top-full left-0 z-20 mt-2 w-72" data-open={open} inert={!open}>
+        <div className="reveal-inner">
+          <div className="border border-rule bg-bg-card">
+            <Group title="status" rows={STATUS_ROWS} filters={filters} counts={counts} onChange={onChange} />
+            <Group title="flags" rows={FLAG_ROWS} filters={filters} counts={counts} onChange={onChange} />
 
-          <div className="flex justify-end border-t border-rule px-6 py-2">
-            <button type="button" onClick={() => onChange(resetPanel(filters))} className={`${textButton} text-text-muted`}>
-              [ clear ]
-            </button>
+            <div className="flex justify-end border-t border-rule px-6 py-2">
+              <button
+                type="button"
+                onClick={() => onChange(resetPanel(filters))}
+                className={`${textButton} text-text-muted`}
+              >
+                [ clear ]
+              </button>
+            </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }

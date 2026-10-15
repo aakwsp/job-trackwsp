@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, type TransitionEvent } from 'react'
 import type { Job } from '../types'
+import { prefersReducedMotion } from '../lib/motion'
 import MetaLine from './MetaLine'
 import { textButton } from './styles'
 
@@ -7,35 +8,63 @@ type Props = {
   job: Job
   // Applied since the last sync: [ undo ] instead of a plain "applied".
   undoable: boolean
+  // Called once the drawer has finished sliding out; the parent unmounts it.
   onClose: () => void
   onOpen: (job: Job) => void
   onMarkApplied: (job: Job) => void
   onUndo: (job: Job) => void
+  onViewPipeline: () => void
 }
 
-// The detail card: full company and title, everything else we know about a
-// posting, and the apply action. Closes on Esc or a click outside the panel.
-export default function JobDetail({ job, undoable, onClose, onOpen, onMarkApplied, onUndo }: Props) {
-  const panelRef = useRef<HTMLDivElement>(null)
+// The detail drawer: slides in from the right over a dimmed list. Closes on
+// Esc or a click on the dimmed area, sliding back out first.
+//
+// Sliding *in* is pure CSS (`@starting-style` on `.drawer` in index.css).
+// Sliding *out* needs the drawer to stay on screen while it animates, so
+// closing is two steps: set `closing` (CSS slides it away), then when that
+// transition ends tell the parent to unmount it.
+export default function JobDetail({ job, undoable, onClose, onOpen, onMarkApplied, onUndo, onViewPipeline }: Props) {
+  const panelRef = useRef<HTMLElement>(null)
+  const [closing, setClosing] = useState(false)
 
-  // Same pattern as FilterMenu: document-level listeners that exist only
-  // while the panel is mounted, removed by the cleanup function.
+  // With reduced motion there's no transition, so `transitionend` would
+  // never fire; close straight away instead.
+  function close() {
+    if (prefersReducedMotion()) onClose()
+    else setClosing(true)
+  }
+
+  function onTransitionEnd(e: TransitionEvent) {
+    // transitionend bubbles up from children too, and fires once per
+    // property; only the drawer's own slide counts.
+    if (closing && e.target === e.currentTarget && e.propertyName === 'transform') onClose()
+  }
+
+  // Safety net: if `transitionend` never arrives (an interrupted
+  // transition doesn't fire it), unmount anyway after twice the duration,
+  // so an invisible drawer can never sit on top of the list eating clicks.
   useEffect(() => {
-    // Move keyboard focus into the panel so Tab starts from its buttons.
+    if (!closing) return
+    const t = setTimeout(onClose, 400)
+    return () => clearTimeout(t)
+  }, [closing, onClose])
+
+  // Move keyboard focus into the drawer once, when it opens, so Tab starts
+  // from its buttons.
+  useEffect(() => {
     panelRef.current?.focus()
-    function onPointerDown(e: PointerEvent) {
-      if (!panelRef.current?.contains(e.target as Node)) onClose()
-    }
+  }, [])
+
+  // Esc closes. No dependency list: `close` is a new function every render,
+  // so the listener is swapped for a fresh one each time (cheap) and never
+  // calls a stale `close`.
+  useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') close()
     }
-    document.addEventListener('pointerdown', onPointerDown)
     document.addEventListener('keydown', onKeyDown)
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown)
-      document.removeEventListener('keydown', onKeyDown)
-    }
-  }, [onClose])
+    return () => document.removeEventListener('keydown', onKeyDown)
+  })
 
   // Optional rows: only the ones this posting has.
   const extra: [string, string | null][] = [
@@ -45,20 +74,20 @@ export default function JobDetail({ job, undoable, onClose, onOpen, onMarkApplie
   ]
 
   return (
-    // `fixed inset-0` covers the window so the panel can be centred on it;
-    // `pointer-events-none` lets clicks pass through the empty area to the
-    // page (the outside-click listener then closes the panel), while the
-    // panel itself turns them back on. `z-30` is above the sticky city bands
-    // (z-10) and the filter panel (z-20).
-    <div className="pointer-events-none fixed inset-0 z-30 flex items-center justify-center p-6">
-      <div
+    <>
+      {/* The dimmed layer over the list. It catches the "outside" click, so
+          no document-level pointer listener is needed. */}
+      <div className="drawer-backdrop fixed inset-0 z-30" data-closing={closing} onClick={close} aria-hidden />
+      <aside
         ref={panelRef}
         role="dialog"
         aria-label={`${job.company} — ${job.title}`}
         tabIndex={-1}
-        className="pointer-events-auto w-full max-w-lg border border-rule bg-bg-card outline-none"
+        data-closing={closing}
+        onTransitionEnd={onTransitionEnd}
+        className="drawer fixed top-0 right-0 bottom-0 z-40 flex w-full max-w-md flex-col overflow-y-auto border-l border-rule bg-bg-card outline-none"
       >
-        <div className="px-6 pt-5 pb-4">
+        <div className="px-6 pt-6 pb-4">
           <h2 className="text-company leading-tight lowercase">{job.company}</h2>
           <p className="mt-2 text-sub leading-snug text-text-muted">{job.title}</p>
           <p className="mt-3 text-meta text-text-dim">
@@ -103,7 +132,15 @@ export default function JobDetail({ job, undoable, onClose, onOpen, onMarkApplie
             <span className="text-text-dim">applied</span>
           )}
         </div>
-      </div>
-    </div>
+
+        {job.applied && (
+          <div className="border-t border-rule px-6 py-3 text-meta">
+            <button type="button" onClick={onViewPipeline} className={`${textButton} text-text-muted`}>
+              view in pipeline →
+            </button>
+          </div>
+        )}
+      </aside>
+    </>
   )
 }

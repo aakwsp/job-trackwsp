@@ -16,6 +16,10 @@
   --rule:       #211e26;
   --gap:        #1a171e;
 
+  /* motion: one duration and easing for every transition in the app */
+  --motion: 180ms;
+  --ease:   ease-out;
+
   /* tracker additions */
   --bg-hover:   #18161c;  /* row/cell hover */
   --rule-strong:#2e2a36;  /* section bands */
@@ -48,12 +52,15 @@
      (`--text-meta` → `text-meta`). All rem, so the whole UI follows the
      root font-size that the ctrl +/- scale sets on <html>; px values in
      the comments are at 100%. */
+  --text-micro:        0.625rem;   /* 10px  top strip, view tabs */
   --text-meta:         0.75rem;    /* 12px  labels, meta lines, bands, chips */
   --text-sub:          0.875rem;   /* 14px  role titles under a company */
   --text-body:         0.9375rem;  /* 15px  body default */
   --text-company-line: 1.0625rem;  /* 17px  company in list view */
   --text-company:      1.3125rem;  /* 21px  company on a card */
+  --text-brand:        1.25rem;    /* 20px  "job tracker" in the header */
   --text-heading:      1.75rem;    /* 28px  page title */
+  --text-hero:         3.5rem;     /* 56px  hero title per view */
 }
 
 @layer base {
@@ -114,7 +121,12 @@
   position: relative;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
-  transition: background 0.12s ease;
+  /* Marking applied: the stripe turns green first (::before, below), then
+     the card settles into its dimmed applied look — hence the delay on
+     opacity, so the two read as one step after the other. */
+  transition:
+    background 0.12s ease,
+    opacity var(--motion) var(--ease) var(--motion);
 }
 .card:hover { background: var(--bg-hover); }
 
@@ -129,6 +141,7 @@
   left: 0;
   width: 3px;
   background: transparent;
+  transition: background-color var(--motion) var(--ease);
 }
 .card[data-applied="true"] { opacity: 0.55; }
 
@@ -184,4 +197,138 @@
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+/* ── shell ─────────────────────────────────────────────── */
+
+/* beige strip at the very top */
+.strip {
+  background: var(--text);
+  color: var(--bg);
+  font-size: var(--text-micro);
+  letter-spacing: 0.04em;
+}
+.strip-rule {
+  height: 1px;
+  background: var(--text-muted);
+}
+.strip-diamond {
+  width: 0.375rem;
+  height: 0.375rem;
+  background: var(--bg);
+  transform: rotate(45deg);
+}
+
+/* JOBS / QUEUE / PIPELINE. The active one is a solid parchment block. */
+.tab {
+  cursor: pointer;
+  padding: 0.25rem 0.75rem;
+  font-size: var(--text-micro);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  transition: color var(--motion) var(--ease), background-color var(--motion) var(--ease);
+}
+.tab:hover { color: var(--text); }
+.tab-active,
+.tab-active:hover {
+  background: var(--text);
+  color: var(--bg);
+  font-weight: 700;
+}
+
+/* hero: the four status colours as a 3px stripe down its left edge, a
+   quarter each — same idea as a card's stripe, all statuses at once */
+.hero {
+  position: relative;
+}
+.hero::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: linear-gradient(
+    var(--status-pink) 0 25%,
+    var(--status-blue) 25% 50%,
+    var(--status-green) 50% 75%,
+    var(--status-sand) 75% 100%
+  );
+}
+/* once mostly scrolled away (Hero sets data-collapsed), fade and lift */
+.hero > * {
+  transition: opacity var(--motion) var(--ease), transform var(--motion) var(--ease);
+}
+.hero[data-collapsed="true"] > * {
+  opacity: 0;
+  transform: translateY(-0.5rem);
+}
+
+/* ── motion ────────────────────────────────────────────── */
+
+/* Height + fade open/close for things that stay mounted (filter panel,
+   city sections). Animating `height: auto` isn't possible, but a one-row
+   grid whose row goes from 0fr to 1fr is: the row's size is a number the
+   browser can interpolate, and 1fr means "as tall as the content".
+   `.reveal-inner` needs `min-height: 0` + `overflow: hidden` so the
+   content can actually shrink to nothing instead of spilling out. */
+.reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion) var(--ease), opacity var(--motion) var(--ease);
+}
+.reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+.reveal-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Detail drawer. Entering: `@starting-style` gives the values to animate
+   *from* when the element first appears, so it slides in from off-screen
+   right with no JavaScript. Leaving: JobDetail sets data-closing, which
+   slides it back out before React removes it. */
+.drawer {
+  transform: translateX(0);
+  transition: transform var(--motion) var(--ease);
+}
+@starting-style {
+  .drawer { transform: translateX(100%); }
+}
+.drawer[data-closing="true"] { transform: translateX(100%); }
+
+/* the dimmed layer over the list behind the drawer */
+.drawer-backdrop {
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  opacity: 1;
+  transition: opacity var(--motion) var(--ease);
+}
+@starting-style {
+  .drawer-backdrop { opacity: 0; }
+}
+.drawer-backdrop[data-closing="true"] { opacity: 0; }
+
+/* Crossfade for view-mode and page switches (lib/motion.ts). The browser
+   draws the old and new page as two snapshots and these set how they fade. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--motion);
+  animation-timing-function: var(--ease);
+}
+
+/* Reduced motion: everything above simply happens instantly. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0s !important;
+    transition-delay: 0s !important;
+  }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
 }

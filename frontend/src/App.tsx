@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import * as api from './api'
 import type { Filters, Job } from './types'
 import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
@@ -8,6 +8,13 @@ import { useUiScale } from './lib/useUiScale'
 import FilterBar from './components/FilterBar'
 import CityGroup from './components/CityGroup'
 import JobDetail from './components/JobDetail'
+import TopStrip from './components/TopStrip'
+import AppHeader from './components/AppHeader'
+import Hero from './components/Hero'
+import AppFooter from './components/AppFooter'
+import Placeholder from './components/Placeholder'
+import { PAGES, type Page } from './lib/page'
+import { withTransition } from './lib/motion'
 
 // One value instead of separate `loading` / `jobs` / `error` so impossible
 // combinations (loading *and* errored) can't happen. `kind` is the tag
@@ -37,6 +44,16 @@ export default function App() {
   // so the card reads the live row from `jobs` and sees [ mark applied ]
   // take effect instead of holding a stale copy.
   const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [page, setPage] = useState<Page>('jobs')
+
+  // <main> is the one scrolling element; every view scrolls inside it.
+  const mainRef = useRef<HTMLElement>(null)
+  // Where each view was scrolled to when you left it. A ref, not state:
+  // changing it shouldn't re-render anything.
+  const scrollByPage = useRef<Partial<Record<Page, number>>>({})
+  // The sticky toolbar's height, so the city bands can stick right under it.
+  const toolbarRef = useRef<HTMLDivElement>(null)
+  const [toolbarH, setToolbarH] = useState(0)
 
   useEffect(() => {
     // If the effect re-runs (or StrictMode mounts twice in dev) before the
@@ -63,10 +80,35 @@ export default function App() {
   )
   const groups = useMemo(() => groupByCity(visible), [visible])
   const selected = jobs.find((j) => j.id === selectedId) ?? null
-  // useCallback returns the *same* function across renders. JobDetail's
-  // effect lists `onClose` as a dependency; a fresh arrow each render would
-  // re-run that effect (and re-grab focus) every time App re-renders.
-  const closeDetail = useCallback(() => setSelectedId(null), [])
+
+  // Restore the scroll position of the view just switched to. A *layout*
+  // effect runs after React updates the DOM but before the browser paints,
+  // so the view never shows at the wrong position first.
+  useLayoutEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = scrollByPage.current[page] ?? 0
+  }, [page])
+
+  // Track the toolbar's height (it changes when chips wrap or the UI scale
+  // changes). ResizeObserver calls back whenever the element's size changes.
+  // Re-run per page: the toolbar only exists on the jobs view.
+  useLayoutEffect(() => {
+    const el = toolbarRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setToolbarH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [page])
+
+  function switchPage(p: Page) {
+    if (p === page) return
+    if (mainRef.current) scrollByPage.current[page] = mainRef.current.scrollTop
+    withTransition(() => setPage(p))
+  }
+
+  function viewPipeline() {
+    setSelectedId(null)
+    switchPage('pipeline')
+  }
   const counts = useMemo(() => rowCounts(jobs, filters), [jobs, filters])
 
   // Every filter change goes through here so it's saved for next launch.
@@ -75,8 +117,9 @@ export default function App() {
     saveFilters(next)
   }
 
+  // DEFAULT / COMPACT / LINE crossfade rather than snap (see lib/motion).
   function changeView(v: ViewMode) {
-    setView(v)
+    withTransition(() => setView(v))
     saveView(v)
   }
 
@@ -156,104 +199,137 @@ export default function App() {
     })
   }
 
-  return (
-    // A full-height column: the header keeps its natural height and <main>
-    // takes the rest (`flex-1`) and scrolls on its own (`overflow-y-auto`).
-    // Because <main> is the scroll container, the city bands can use
-    // `sticky top-0` without knowing how tall the header is.
-    <div className="flex h-screen flex-col">
-      <header className="shrink-0 border-b border-rule-strong">
-        <div className="flex items-baseline justify-between px-6 pt-4">
-          <h1 className="text-heading">job-trackwsp</h1>
-          <div className="flex items-baseline gap-4 text-meta text-text-muted">
-            {load.kind === 'ready' && (
-              <span>
-                {visible.length} / {jobs.length}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={sync}
-              disabled={syncing}
-              className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
-            >
-              {syncing ? '[ syncing… ]' : '[ sync ]'}
-            </button>
-          </div>
-        </div>
+  const current = PAGES.find((p) => p.page === page)!
 
-        <FilterBar
-          filters={filters}
-          onChange={changeFilters}
-          counts={counts}
-          view={view}
-          onView={changeView}
-          scale={scale}
-          onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
-          onExpandAll={() => setCollapsed(new Set())}
+  return (
+    // A full-height column: the strip and header keep their natural height
+    // and are always visible; <main> takes the rest (`flex-1`) and scrolls
+    // on its own. Hero, toolbar, list and footer all scroll inside <main>,
+    // and the toolbar is `sticky top-0` within it, so it stops right under
+    // the header once the hero has scrolled away.
+    <div className="flex h-screen flex-col">
+      <TopStrip />
+      <AppHeader page={page} onPage={switchPage} />
+
+      <main
+        ref={mainRef}
+        className="flex flex-1 flex-col overflow-y-auto"
+        // A CSS variable set from React; the city bands read it (CityGroup).
+        // The cast is because TypeScript's style type doesn't know custom
+        // properties.
+        style={{ '--toolbar-h': `${toolbarH}px` } as CSSProperties}
+      >
+        {/* `key={page}` gives each view a fresh Hero (and its scroll
+            observer) instead of reusing the last view's. */}
+        <Hero
+          key={page}
+          title={current.title}
+          subtitle={current.subtitle}
+          aside={
+            page === 'jobs' && (
+              <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
+                {load.kind === 'ready' && (
+                  <span>
+                    {visible.length} / {jobs.length}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={sync}
+                  disabled={syncing}
+                  className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
+                >
+                  {syncing ? '[ syncing… ]' : '[ sync ]'}
+                </button>
+              </div>
+            )
+          }
         />
 
-        {notice && (
-          <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
-            <span>{notice}</span>
-            <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
-              [ dismiss ]
-            </button>
-          </div>
+        {page === 'jobs' ? (
+          <>
+            {/* `z-20` keeps the toolbar (and the filter panel that drops out
+                of it) above the city bands, which are `z-10`. */}
+            <div ref={toolbarRef} className="sticky top-0 z-20 border-t border-rule-strong bg-bg">
+              <FilterBar
+                filters={filters}
+                onChange={changeFilters}
+                counts={counts}
+                view={view}
+                onView={changeView}
+                scale={scale}
+                onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
+                onExpandAll={() => setCollapsed(new Set())}
+              />
+              {notice && (
+                <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
+                  <span>{notice}</span>
+                  <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
+                    [ dismiss ]
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {load.kind === 'loading' && <Message>loading postings…</Message>}
+
+            {load.kind === 'error' && (
+              <Message>
+                could not load postings: {load.message}{' '}
+                <button type="button" onClick={retry} className="cursor-pointer text-text hover:underline">
+                  [ retry ]
+                </button>
+              </Message>
+            )}
+
+            {load.kind === 'ready' && jobs.length === 0 && (
+              <Message>no postings yet — run a sync to pull the inbox.</Message>
+            )}
+
+            {load.kind === 'ready' && jobs.length > 0 && visible.length === 0 && (
+              <Message>
+                nothing matches these filters.{' '}
+                <button
+                  type="button"
+                  onClick={() => changeFilters(DEFAULT_FILTERS)}
+                  className="cursor-pointer text-text hover:underline"
+                >
+                  [ clear ]
+                </button>
+              </Message>
+            )}
+
+            {groups.map((g) => (
+              <CityGroup
+                key={g.city}
+                city={g.city}
+                jobs={g.jobs}
+                view={view}
+                collapsed={collapsed.has(g.city)}
+                onToggle={toggleCity}
+                onSelect={(job) => setSelectedId(job.id)}
+                onOpen={open}
+              />
+            ))}
+          </>
+        ) : (
+          <Placeholder what={current.title} />
         )}
-      </header>
 
-      <main className="flex-1 overflow-y-auto">
-        {load.kind === 'loading' && <Message>loading postings…</Message>}
-
-        {load.kind === 'error' && (
-          <Message>
-            could not load postings: {load.message}{' '}
-            <button type="button" onClick={retry} className="cursor-pointer text-text hover:underline">
-              [ retry ]
-            </button>
-          </Message>
-        )}
-
-        {load.kind === 'ready' && jobs.length === 0 && (
-          <Message>no postings yet — run a sync to pull the inbox.</Message>
-        )}
-
-        {load.kind === 'ready' && jobs.length > 0 && visible.length === 0 && (
-          <Message>
-            nothing matches these filters.{' '}
-            <button
-              type="button"
-              onClick={() => changeFilters(DEFAULT_FILTERS)}
-              className="cursor-pointer text-text hover:underline"
-            >
-              [ clear ]
-            </button>
-          </Message>
-        )}
-
-        {groups.map((g) => (
-          <CityGroup
-            key={g.city}
-            city={g.city}
-            jobs={g.jobs}
-            view={view}
-            collapsed={collapsed.has(g.city)}
-            onToggle={toggleCity}
-            onSelect={(job) => setSelectedId(job.id)}
-            onOpen={open}
-          />
-        ))}
+        <AppFooter />
       </main>
 
       {selected && (
         <JobDetail
+          // A different posting gets a fresh drawer (and slide-in).
+          key={selected.id}
           job={selected}
           undoable={recentlyApplied.has(selected.id)}
-          onClose={closeDetail}
+          onClose={() => setSelectedId(null)}
           onOpen={open}
           onMarkApplied={markApplied}
           onUndo={undo}
+          onViewPipeline={viewPipeline}
         />
       )}
     </div>
