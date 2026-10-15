@@ -32,3 +32,11 @@ export const addApplication = (company: string, title: string, appliedOn: string
 
 export const saveApplicationNotes = (id: number, body: string) =>
   invoke<void>('save_application_notes', { id, body })
+
+// Gmail (JT-13). `gmailConnect` resolves once the browser sign-in finishes
+// (or rejects: timed out, denied, no keyring, ...), with the address.
+export const gmailConnect = () => invoke<string>('gmail_connect')
+
+export const gmailStatus = () => invoke<string | null>('gmail_status')
+
+export const gmailDisconnect = () => invoke<void>('gmail_disconnect')

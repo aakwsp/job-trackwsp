@@ -82,6 +82,7 @@ mod tests {
                 "extractions",
                 "job_notes",
                 "jobs",
+                "settings",
             ]
         );
 

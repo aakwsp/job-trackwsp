@@ -16,6 +16,8 @@ import AppHeader from './components/AppHeader'
 import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
+import { GmailConnectBlock, GmailStatusLine } from './components/GmailConnection'
+import { useGmail } from './lib/useGmail'
 import { PAGES, type Page } from './lib/page'
 import RevealProvider from './components/RevealProvider'
 
@@ -76,6 +78,9 @@ export default function App() {
   const setToast = (t: Omit<Toast, 'id'> | null) =>
     setToastState(t && { ...t, id: ++toastSeq.current })
   const [page, setPage] = useState<Page>('jobs')
+  // The job account's Gmail connection, shown on QUEUE (JT-13). Checked
+  // each time QUEUE opens.
+  const gmail = useGmail(page === 'queue')
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
@@ -500,6 +505,14 @@ export default function App() {
 
   const current = PAGES.find((p) => p.page === page)!
 
+  const gmailProps = {
+    status: gmail.status,
+    busy: gmail.busy,
+    error: gmail.error,
+    onConnect: gmail.connect,
+    onDisconnect: gmail.disconnect,
+  }
+
   const noticeLine = notice && (
     <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
       <span>{notice}</span>
@@ -554,7 +567,22 @@ export default function App() {
           <RevealProvider>
             <Hero
               title={current.title}
-              subtitle={page === 'pipeline' && load.kind === 'ready' ? pipelineHero.subtitle : current.subtitle}
+              subtitle={
+                page === 'pipeline' && load.kind === 'ready' ? (
+                  pipelineHero.subtitle
+                ) : page === 'queue' ? (
+                  <>
+                    <GmailStatusLine {...gmailProps} />
+                    {/* Errors while connected (a failed disconnect) go
+                        here; while disconnected the block shows them. */}
+                    {gmail.status.kind === 'connected' && gmail.error && (
+                      <span className="mt-1 block text-pink">{gmail.error}</span>
+                    )}
+                  </>
+                ) : (
+                  current.subtitle
+                )
+              }
               stripe={page === 'pipeline' && apps.length > 0 ? pipelineHero.stripe : undefined}
               aside={
                 page === 'pipeline' ? (
@@ -673,7 +701,10 @@ export default function App() {
                 )}
               </>
             ) : (
-              <Placeholder what={current.title} />
+              <>
+                {page === 'queue' && <GmailConnectBlock {...gmailProps} />}
+                <Placeholder what={current.title} />
+              </>
             )}
 
             <AppFooter />

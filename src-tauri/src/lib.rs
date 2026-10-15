@@ -1,5 +1,6 @@
 mod applications;
 mod db;
+mod gmail;
 mod jobs;
 mod sync;
 
@@ -142,6 +143,52 @@ async fn save_application_notes(
     applications::save_notes(&pool, id, &body).await
 }
 
+/// The OAuth client file, from `<config dir>/job-trackwsp/client_secret.json`
+/// (`~/.config/...` on Linux), resolved with Tauri's path API.
+fn gmail_credentials(app: &tauri::AppHandle) -> Result<gmail::credentials::ClientCredentials, gmail::GmailError> {
+    let dir = app
+        .path()
+        .config_dir()
+        .map_err(|e| gmail::GmailError::Io(format!("no config dir: {e}")))?;
+    gmail::credentials::load(&gmail::credentials::path_in(&dir))
+}
+
+/// [ connect job account ]: runs the browser sign-in and returns the
+/// connected address. Blocking (up to the 5-minute timeout), so not
+/// `async`: Tauri runs it off the UI thread.
+#[tauri::command]
+fn gmail_connect(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    state: tauri::State<'_, gmail::GmailState>,
+) -> Result<String, gmail::GmailError> {
+    let creds = gmail_credentials(&app)?;
+    gmail::connect(&state, &pool, &creds, |url| {
+        app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+    })
+}
+
+/// The connected address, or null. A missing client file doesn't make this
+/// fail: without it there's simply no way to check with Google.
+#[tauri::command]
+fn gmail_status(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    state: tauri::State<'_, gmail::GmailState>,
+) -> Result<Option<String>, gmail::GmailError> {
+    gmail::status(&state, &pool, gmail_credentials(&app).ok().as_ref())
+}
+
+/// [ disconnect ]: revoke at Google, then delete the keyring entry.
+#[tauri::command]
+fn gmail_disconnect(
+    app: tauri::AppHandle,
+    pool: tauri::State<'_, SqlitePool>,
+    state: tauri::State<'_, gmail::GmailState>,
+) -> Result<(), gmail::GmailError> {
+    gmail::disconnect(&state, &pool, gmail_credentials(&app).ok().as_ref())
+}
+
 /// Opens a posting in the system browser. Done from Rust rather than
 /// exposing the opener plugin to the frontend, so the http(s) check can't be
 /// bypassed and no capability has to be granted to the webview.
@@ -197,7 +244,10 @@ pub fn run() {
             mark_rejected,
             undo_event,
             add_application,
-            save_application_notes
+            save_application_notes,
+            gmail_connect,
+            gmail_status,
+            gmail_disconnect
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -219,6 +269,7 @@ pub fn run() {
 
             spawn_background_sync(pool.clone());
             app.manage(pool);
+            app.manage(gmail::GmailState::new(Box::new(gmail::store::KeyringStore)));
 
             Ok(())
         })
