@@ -2323,6 +2323,7 @@ dependencies = [
 name = "job-trackwsp"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "keyring",
  "log",
  "oauth2",

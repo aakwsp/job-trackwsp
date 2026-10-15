@@ -16,7 +16,8 @@ import AppHeader from './components/AppHeader'
 import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
-import { GmailConnectBlock, GmailStatusLine } from './components/GmailConnection'
+import { CheckMailButton, GmailConnectBlock, GmailStatusLine, MailStatusLine } from './components/GmailConnection'
+import { useMail } from './lib/useMail'
 import { useGmail } from './lib/useGmail'
 import { PAGES, type Page } from './lib/page'
 import RevealProvider from './components/RevealProvider'
@@ -81,6 +82,8 @@ export default function App() {
   // The job account's Gmail connection, shown on QUEUE (JT-13). Checked
   // each time QUEUE opens.
   const gmail = useGmail(page === 'queue')
+  // The mail poller's status line, only meaningful once connected.
+  const mail = useMail(page === 'queue' && gmail.status.kind === 'connected')
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
@@ -573,7 +576,15 @@ export default function App() {
                   pipelineHero.subtitle
                 ) : page === 'queue' ? (
                   <>
-                    <GmailStatusLine {...gmailProps} />
+                    {gmail.status.kind === 'connected' && (
+                      <span className="block">
+                        <MailStatusLine mail={mail.status} busy={mail.busy} />
+                      </span>
+                    )}
+                    {mail.error && <span className="mt-1 block text-pink">{mail.error}</span>}
+                    <span className={gmail.status.kind === 'connected' ? 'mt-1 block' : undefined}>
+                      <GmailStatusLine {...gmailProps} />
+                    </span>
                     {/* Errors while connected (a failed disconnect) go
                         here; while disconnected the block shows them. */}
                     {gmail.status.kind === 'connected' && gmail.error && (
@@ -588,6 +599,8 @@ export default function App() {
               aside={
                 page === 'pipeline' ? (
                   load.kind === 'ready' && pipelineHero.aside
+                ) : page === 'queue' ? (
+                  gmail.status.kind === 'connected' && <CheckMailButton busy={mail.busy} onCheck={mail.check} />
                 ) : 
                 page === 'jobs' && (
                   <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">

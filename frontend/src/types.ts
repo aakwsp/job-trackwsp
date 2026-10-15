@@ -87,3 +87,10 @@ export type Application = {
   notes: string | null
   events: AppEvent[] // oldest first
 }
+
+// Mirrors `mail::MailStatus` in src-tauri/src/mail/mod.rs (JT-14).
+export type MailStatus = {
+  last_checked_at: string | null // full ISO timestamp, UTC; null before the first poll
+  last_new: number // messages from that poll that passed the filter
+  checking: boolean // a poll is running now
+}

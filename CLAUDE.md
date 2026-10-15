@@ -68,13 +68,24 @@ insert a new row.
 - `applications` — the user's applications. **Never** written by the sync.
   `job_id` is nullable, since the user can apply to things the scheduler never
   found. `status` is stored and recomputed whenever an event is written.
-- `emails` — raw Gmail messages, unique on `gmail_id`.
+- `emails` — Gmail messages from the job account, unique on `gmail_id`
+  (JT-14, `src-tauri/src/mail/`). Each is stored once with its decoded
+  plain-text body (`text/plain` preferred, HTML stripped otherwise), then
+  filtered at once: `status` is `pending` (on to the LLM, JT-15) or `ignored`,
+  and `filter_reason` says why either way. The allow list wins over the
+  ignore list; both are constants in `mail/filter.rs` for now (editable in
+  JT-33). Polling: on start, every 10 minutes, and on [ check mail ], one
+  at a time; the first poll backfills since 2026-08-01, later ones use
+  `history.list` from `settings.mail_history_id` (404 → a search since the
+  last successful poll). Gmail disconnected = no polling, no errors.
 - `extractions` — what the LLM pulled from an email, awaiting confirmation.
   Nothing changes an application until the user confirms.
 - `application_events` — the per-application timeline; the latest event
   determines `applications.status`.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
+  `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the
+  mail poller.
 
 Timestamps are ISO-8601 text (`YYYY-MM-DD` for sheet dates, full
 `YYYY-MM-DDTHH:MM:SSZ` for anything the app records). SQLite has no date type

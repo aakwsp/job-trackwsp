@@ -1,0 +1,39 @@
+{
+  "id": "18f0a1b2c3d4e5f7",
+  "threadId": "18f0a1b2c3d4e5f7",
+  "labelIds": [
+    "CATEGORY_PROMOTIONS"
+  ],
+  "snippet": "This week in tech",
+  "internalDate": "1790000100000",
+  "payload": {
+    "mimeType": "text/html",
+    "filename": "",
+    "headers": [
+      {
+        "name": "From",
+        "value": "Tech Digest <digest@newsletter.example.com>"
+      },
+      {
+        "name": "To",
+        "value": "candidate@example.com"
+      },
+      {
+        "name": "Subject",
+        "value": "This week in tech"
+      },
+      {
+        "name": "List-Unsubscribe",
+        "value": "<https://newsletter.example.com/u/abc>"
+      },
+      {
+        "name": "Content-Type",
+        "value": "text/html; charset=utf-8"
+      }
+    ],
+    "body": {
+      "size": 300,
+      "data": "PGh0bWw-PGhlYWQ-PHRpdGxlPkRpZ2VzdDwvdGl0bGU-PHN0eWxlPnB7Y29sb3I6cmVkfTwvc3R5bGU-PC9oZWFkPjxib2R5PjxoMT5UaGlzIHdlZWsgaW4gdGVjaDwvaDE-PHNjcmlwdD50cmFjaygpPC9zY3JpcHQ-PGRpdj5Sb2xlcyAmYW1wOyBpbnRlcm5zaGlwcyAmbmRhc2g7IGZhbGwgZWRpdGlvbjwvZGl2PjxwPjxhIGhyZWY9Imh0dHBzOi8vZXhhbXBsZS5jb20iPlJlYWQgbW9yZSZoZWxsaXA7PC9hPjwvcD48dGFibGU-PHRyPjx0ZD5VbnN1YnNjcmliZTwvdGQ-PC90cj48L3RhYmxlPjwvYm9keT48L2h0bWw-"
+    }
+  }
+}
