@@ -4,7 +4,7 @@
 export type Page = 'jobs' | 'inbox' | 'pipeline'
 
 // Tab label, hero title and the one-line subtitle under it. INBOX (was
-// QUEUE, JT-18) shows the mail status line instead of a subtitle.
+// QUEUE, JT-18) adds the gmail / gemini lines under its subtitle.
 export const PAGES: { page: Page; tab: string; title: string; subtitle: string }[] = [
   {
     page: 'jobs',

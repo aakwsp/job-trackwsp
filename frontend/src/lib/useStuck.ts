@@ -5,7 +5,9 @@ import { useEffect, useState, type RefObject } from 'react'
 // `top: -1px`; while stuck, its top pixel is clipped by the scroll
 // container, so it's no longer fully visible, which an IntersectionObserver
 // on that container reports. Used to draw a hairline only while stuck.
-export function useStuck(ref: RefObject<HTMLElement | null>): boolean {
+// `offset`: where it sticks (px from the top) when that isn't 0, e.g. under
+// a sticky toolbar; the observed area starts there.
+export function useStuck(ref: RefObject<HTMLElement | null>, offset = 0): boolean {
   const [stuck, setStuck] = useState(false)
   useEffect(() => {
     const el = ref.current
@@ -13,11 +15,12 @@ export function useStuck(ref: RefObject<HTMLElement | null>): boolean {
     const root = scrollParent(el)
     const io = new IntersectionObserver(([e]) => setStuck(e.intersectionRatio < 1 && e.boundingClientRect.top < (e.rootBounds?.top ?? 0) + 1), {
       root,
+      rootMargin: `-${offset}px 0px 0px 0px`,
       threshold: [1],
     })
     io.observe(el)
     return () => io.disconnect()
-  }, [ref])
+  }, [ref, offset])
   return stuck
 }
 

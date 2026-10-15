@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { useStuck } from '../../lib/useStuck'
 import { loadFolded, loadListCollapsed, saveFolded, saveListCollapsed, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
@@ -6,6 +6,9 @@ import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
 import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
+import InboxBar, { type JobSort, type Mode } from './InboxBar'
+import { useReveal } from '../../lib/reveal'
+import { inboxFilterCounts, loadInboxFilters, matchesInboxFilters, saveInboxFilters, type InboxFilters } from '../../lib/inboxFilters'
 
 // INBOX (JT-18), from design/inbox/Inbox.dc.html: the list on the left
 // (about a quarter of the window, or a narrow strip when collapsed with
@@ -21,8 +24,6 @@ type Props = {
   connected: boolean
 }
 
-type Mode = 'email' | 'job'
-type JobSort = 'activity' | 'company'
 
 export default function Inbox({ inbox, top, connected }: Props) {
   // `g` toggles by email / by job.
@@ -43,9 +44,31 @@ export default function Inbox({ inbox, top, connected }: Props) {
   const [jobId, setJobId] = useState<number | null>(null)
   const [sort, setSort] = useState<MailSort>('newest')
   const [showIgnored, setShowIgnored] = useState(false)
+  // [ filters ] (include / exclude per section and unread), kept like
+  // the JOBS filters.
+  const [filters, setFilters] = useState(loadInboxFilters)
+  function changeFilters(f: InboxFilters) {
+    setFilters(f)
+    saveInboxFilters(f)
+  }
   // Memoized: `?? []` alone would be a new array every render while
   // loading, re-running every memo and effect below.
-  const rows = useMemo(() => inbox.rows ?? [], [inbox.rows])
+  const allRows = useMemo(() => inbox.rows ?? [], [inbox.rows])
+  const filterCounts = useMemo(() => inboxFilterCounts(allRows), [allRows])
+  const rows = useMemo(() => allRows.filter((r) => matchesInboxFilters(r, filters)), [allRows, filters])
+  // The toolbar band sticks to the top; its height goes into --toolbar-h
+  // (as App does for JOBS) so the section bands, company headers and the
+  // detail pane stick right under it. ResizeObserver: it changes when
+  // chips wrap or the UI scale changes.
+  const barRef = useRef<HTMLDivElement>(null)
+  const [barH, setBarH] = useState(0)
+  useLayoutEffect(() => {
+    const el = barRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => setBarH(el.offsetHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
   // Sections by state: // checking (needs you; also mail still waiting
   // for Gemini or routing), // auto (applied automatically, untouched),
@@ -91,6 +114,11 @@ export default function Inbox({ inbox, top, connected }: Props) {
       saveFolded(next)
       return next
     })
+  }
+  function foldAll(fold: boolean) {
+    const next = new Set<FoldKey>(fold ? ['checking', 'auto', 'checked'] : [])
+    saveFolded(next)
+    setFolded(next)
   }
   // j/k walk the open sections only.
   const order = useMemo(
@@ -156,16 +184,20 @@ export default function Inbox({ inbox, top, connected }: Props) {
   }, [inbox])
 
   return (
-    // Both grid templates are complete literal class names: Tailwind only
-    // generates CSS for class names it finds written out in the source.
-    <div
-      data-narrow={narrow || undefined}
-      className={`grid grid-cols-1 border-t border-rule-strong border-b border-b-rule ${
-        narrow ? 'min-[900px]:grid-cols-[12rem_minmax(0,1fr)]' : 'min-[900px]:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]'
-      }`}
-    >
-      <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
-        <Toolbar
+    // --toolbar-h is set here, for everything inside (it overrides App's,
+    // which measures the JOBS toolbar).
+    <div style={{ '--toolbar-h': `${barH}px` } as CSSProperties}>
+      {/* The toolbar band, as on JOBS: full width under the hero, sticky,
+          rising in after the title and subtitle (`--d`). `z-20` keeps the
+          filter panel above the section bands (`z-10`). */}
+      <div ref={barRef} className="enter sticky top-0 z-20 border-t border-rule-strong bg-bg" style={{ '--d': '160ms' } as CSSProperties}>
+        <InboxBar
+          searchRef={searchRef}
+          query={inbox.query}
+          onQuery={inbox.setQuery}
+          filters={filters}
+          onFilters={changeFilters}
+          counts={filterCounts}
           mode={mode}
           onMode={setMode}
           sort={sort}
@@ -174,22 +206,22 @@ export default function Inbox({ inbox, top, connected }: Props) {
           onJobSort={setJobSort}
           narrow={narrow}
           onNarrow={toggleNarrow}
+          onCollapseAll={() => foldAll(true)}
+          onExpandAll={() => foldAll(false)}
         />
-        <SearchLine
-          inputRef={searchRef}
-          value={inbox.query}
-          onChange={inbox.setQuery}
-          count={mode === 'job' ? (inbox.jobs?.length ?? 0) : rows.length}
-          unit={mode === 'job' ? 'jobs' : 'emails'}
-          narrow={narrow}
-          onClose={() => {
-            inbox.setQuery('')
-            searchRef.current?.blur()
-          }}
-        />
-        {!narrow && top}
+      </div>
+      {top}
+    {/* Both grid templates are complete literal class names: Tailwind only
+        generates CSS for class names it finds written out in the source. */}
+    <div
+      data-narrow={narrow || undefined}
+      className={`grid grid-cols-1 border-b border-rule ${
+        narrow ? 'min-[900px]:grid-cols-[12rem_minmax(0,1fr)]' : 'min-[900px]:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]'
+      }`}
+    >
+      <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
         {mode === 'job' ? (
-          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} />
+          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} stickAt={barH} />
         ) : (
           <>
         {checking.length > 0 ? (
@@ -202,7 +234,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
           !inbox.searched && (
             // The InboxEmpty board: the section stays, saying so.
             <>
-              <Band count={0}>// checking</Band>
+              <Section name="checking" count={0} folded={false} onToggle={() => {}} narrow={narrow} />
               <div className="border-b border-rule pt-[1.375rem] pr-5 pb-6 pl-6">
                 <p className="font-serif text-[1.375rem] leading-[1.1] text-text-dim">nothing to check.</p>
                 <p className="mt-2 text-[0.65625rem] text-text-dim">low-confidence mail lands here for a manual look.</p>
@@ -217,7 +249,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
             folded={folded.has('auto')}
             onToggle={toggleFold}
             narrow={narrow}
-            top={checking.length > 0 || connected || !!top}
           >
             <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
@@ -229,7 +260,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
             folded={folded.has('checked')}
             onToggle={toggleFold}
             narrow={narrow}
-            top={checking.length > 0 || autoRows.length > 0 || connected || !!top}
           >
             <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
@@ -248,10 +278,14 @@ export default function Inbox({ inbox, top, connected }: Props) {
         )}
       </section>
 
-      {/* `self-start` + `sticky top-0`: the pane stays in view while the
-          list scrolls; its own max height and scroll keep long emails in
-          reach. 4.5rem = the strip + header above <main>. */}
-      <section aria-label="detail" className="sticky top-0 flex max-h-[calc(100vh-4.5rem)] min-w-0 flex-col self-start overflow-y-auto">
+      {/* `self-start` + `sticky`: the pane stays in view, under the
+          toolbar band, while the list scrolls; its own max height and
+          scroll keep long emails in reach. 4.5rem = the strip + header
+          above <main>. */}
+      <section
+        aria-label="detail"
+        className="sticky top-(--toolbar-h) flex max-h-[calc(100vh-4.5rem-var(--toolbar-h))] min-w-0 flex-col self-start overflow-y-auto"
+      >
         {inbox.error && <p className="border-b border-rule px-8 py-2 text-meta text-pink">{inbox.error}</p>}
         {inbox.detail ? (
           <InboxDetailPane
@@ -267,62 +301,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
         )}
       </section>
     </div>
-  )
-}
-
-// The toolbar row above the list: view mode, then that mode's sorts.
-function Toolbar(props: {
-  mode: Mode
-  onMode: (m: Mode) => void
-  sort: MailSort
-  onSort: (s: MailSort) => void
-  jobSort: JobSort
-  onJobSort: (s: JobSort) => void
-  narrow: boolean
-  onNarrow: () => void
-}) {
-  const { mode, onMode } = props
-  // The fold toggle: « folds the list to a strip, » opens it again.
-  const fold = (
-    <button
-      type="button"
-      onClick={props.onNarrow}
-      aria-pressed={props.narrow}
-      aria-label={props.narrow ? 'expand the list ([)' : 'collapse the list ([)'}
-      title="["
-      className="h-7 shrink-0 cursor-pointer appearance-none bg-transparent px-1.5 text-[0.71875rem] text-text-muted hover:text-text"
-    >
-      {props.narrow ? '[ » ]' : '[ « ]'}
-    </button>
-  )
-  if (props.narrow)
-    return <div className="flex h-11 items-center justify-end border-b border-rule pr-3">{fold}</div>
-  return (
-    <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-rule pr-3 pl-[1.125rem] whitespace-nowrap">
-      <Seg on={mode === 'email'} onClick={() => onMode('email')}>
-        [ by email ]
-      </Seg>
-      <Seg on={mode === 'job'} onClick={() => onMode('job')}>
-        [ by job ]
-      </Seg>
-      <span className="ml-auto pr-0.5 text-[0.65625rem] text-text-dim">sort</span>
-      {mode === 'email'
-        ? (['newest', 'company', 'score'] as MailSort[]).map((s) => (
-            <Seg key={s} on={props.sort === s} dim onClick={() => props.onSort(s)}>
-              {s}
-            </Seg>
-          ))
-        : (
-            [
-              ['activity', 'latest activity'],
-              ['company', 'company'],
-            ] as [JobSort, string][]
-          ).map(([s, label]) => (
-            <Seg key={s} on={props.jobSort === s} dim onClick={() => props.onJobSort(s)}>
-              {label}
-            </Seg>
-          ))}
-      <span className="ml-1.5">{fold}</span>
     </div>
   )
 }
@@ -336,6 +314,7 @@ function JobList({
   onOpen,
   query,
   narrow,
+  stickAt,
 }: {
   jobs: InboxJob[]
   sort: JobSort
@@ -343,6 +322,8 @@ function JobList({
   onOpen: (applicationId: number) => void
   query: string
   narrow: boolean
+  // The toolbar band's height: company headers stick under it.
+  stickAt: number
 }) {
   const companies = new Map<string, InboxJob[]>()
   for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
@@ -360,7 +341,7 @@ function JobList({
         // Each group is the sticky header's containing block, so the next
         // company's header pushes this one up instead of overlapping it.
         <div key={co} className="border-b border-rule">
-          <CompanyHeader>{narrow ? cut(co) : <Hl text={co} query={query} />}</CompanyHeader>
+          <CompanyHeader stickAt={stickAt}>{narrow ? cut(co) : <Hl text={co} query={query} />}</CompanyHeader>
           <ul className="m-0 list-none p-0 pb-2">
             {js.map((j) => {
               const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
@@ -398,49 +379,18 @@ function JobList({
   )
 }
 
-// A segment button: the active one in text colour with a hairline under it.
-// `dim`: inactive ones in --text-dim (the sort row) instead of muted.
-export function Seg({ on, dim, onClick, children }: { on: boolean; dim?: boolean; onClick?: () => void; children: ReactNode }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={on}
-      className={`h-7 cursor-pointer appearance-none border-b bg-transparent px-1.5 text-[0.65625rem] hover:text-text ${
-        on ? `text-text ${dim ? 'border-text' : 'border-transparent'}` : `border-transparent ${dim ? 'text-text-dim' : 'text-text-muted'}`
-      }`}
-    >
-      {children}
-    </button>
-  )
-}
-
-// A `// section` band, with a count on the right.
-export function Band({ children, count, top = false }: { children: ReactNode; count?: number; top?: boolean }) {
-  return (
-    <div
-      className={`flex h-9 items-center border-b border-rule bg-bg pr-5 pl-6 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase ${
-        top ? 'border-t' : ''
-      }`}
-    >
-      <h2 className="font-mono">{children}</h2>
-      {count !== undefined && <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>}
-    </div>
-  )
-}
-
-// A state section (// checking, // auto, // checked) that folds like the
-// city groups in JOBS: the band is a <button> (keyboard focus and
-// Enter/Space for free), and the rows stay mounted while folded so `.reveal`
-// (index.css) can animate the height; `inert` takes hidden rows out of Tab
-// order.
+// A state section (// checking, // auto, // checked): the JOBS city group
+// band (CityGroup), same `.band` class, fold marker, count on the right,
+// sticky under the toolbar band and rising in like the city bands. The
+// band is a <button> (keyboard focus and Enter/Space for free); the rows
+// stay mounted while folded so `.reveal` (index.css) can animate the
+// height, and `inert` takes hidden rows out of Tab order.
 function Section({
   name,
   count,
   folded,
   onToggle,
   narrow = false,
-  top = false,
   children,
 }: {
   name: FoldKey
@@ -448,27 +398,24 @@ function Section({
   folded: boolean
   onToggle: (s: FoldKey) => void
   narrow?: boolean
-  top?: boolean
-  children: ReactNode
+  children?: ReactNode
 }) {
+  const { ref, className: revealClass } = useReveal(`inbox-band:${name}`)
   return (
     <section>
       <button
         type="button"
         onClick={() => onToggle(name)}
         aria-expanded={!folded}
-        className={`flex h-9 w-full cursor-pointer items-center border-b border-rule bg-bg pr-3 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase hover:text-text ${
-          narrow ? 'pl-3' : 'pl-6'
-        } ${
-          top ? 'border-t' : ''
-        }`}
+        ref={ref}
+        className={`band rise ${revealClass} sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text`}
       >
-        <h2 className="font-mono">
-          {/* Narrow: the same header without the "// ". */}
+        <span>
+          {/* Narrow list: the same header without the "// ". */}
           {folded ? '+ ' : '- '}
           {narrow ? name : `// ${name}`}
-        </h2>
-        <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>
+        </span>
+        <span className="text-text-dim">{count}</span>
       </button>
       <div className="reveal" data-open={!folded} inert={folded}>
         <div className="reveal-inner">{children}</div>
@@ -479,70 +426,18 @@ function Section({
 
 // A company header in the by-job list: sticky (same surface as the list),
 // with a hairline only while it's stuck.
-function CompanyHeader({ children }: { children: ReactNode }) {
+function CompanyHeader({ children, stickAt }: { children: ReactNode; stickAt: number }) {
   const ref = useRef<HTMLDivElement>(null)
-  const stuck = useStuck(ref)
+  const stuck = useStuck(ref, stickAt)
   return (
     <div
       ref={ref}
-      className={`sticky top-[-1px] z-10 border-b bg-bg pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05] ${
+      // 1px above the band's bottom edge, so useStuck can tell it's stuck.
+      className={`sticky top-[calc(var(--toolbar-h)-1px)] z-10 border-b bg-bg pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05] ${
         stuck ? 'border-rule' : 'border-transparent'
       }`}
     >
       {children}
-    </div>
-  )
-}
-
-// The search line (JT-18): same spacing as a section band, `// search` in
-// band type, and an input that's only a hairline underline: no box, no
-// radius, Space Mono like everything else.
-function SearchLine({
-  inputRef,
-  value,
-  onChange,
-  count,
-  unit,
-  narrow,
-  onClose,
-}: {
-  inputRef: React.RefObject<HTMLInputElement | null>
-  value: string
-  onChange: (v: string) => void
-  count: number
-  unit: string
-  narrow: boolean
-  onClose: () => void
-}) {
-  return (
-    <div className={`flex h-9 items-center gap-3 border-b border-rule bg-bg pr-3 ${narrow ? 'pl-3' : 'pl-6'}`}>
-      {/* Narrow: the label is still there for screen readers, just not drawn. */}
-      <label
-        htmlFor="inbox-search"
-        className={narrow ? 'sr-only' : 'shrink-0 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase'}
-      >
-        // search
-      </label>
-      <input
-        id="inbox-search"
-        ref={inputRef}
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') {
-            e.preventDefault()
-            // Handled here: nothing else reacts to this esc.
-            e.stopPropagation()
-            onClose()
-          }
-        }}
-        placeholder={narrow ? '/ search' : 'company, role, subject, sender, body'}
-        autoComplete="off"
-        spellCheck={false}
-        className="h-6 min-w-0 flex-1 appearance-none border-0 border-b border-rule-strong bg-transparent px-0 text-meta text-text outline-none placeholder:text-text-dim focus:border-text"
-      />
-      {!narrow && <span className="shrink-0 text-micro text-text-dim">{value.trim() ? `${count} ${unit}` : '/ to search'}</span>}
     </div>
   )
 }

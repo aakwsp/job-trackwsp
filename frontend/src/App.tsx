@@ -18,7 +18,6 @@ import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
 import {
-  CheckMailButton,
   GeminiKeyInput,
   GeminiKeyRow,
   GmailConnectBlock,
@@ -96,6 +95,12 @@ export default function App() {
   const mail = useMail(page === 'inbox' && gmail.status.kind === 'connected')
   // INBOX's lists and detail (JT-18).
   const inbox = useInbox(page === 'inbox', (t) => setToast(t))
+  // The INBOX hero's "5 to check · 160 emails" (checking = still needs a
+  // look, including mail Gemini or routing hasn't finished with).
+  const inboxCounts = useMemo(() => {
+    const rows = inbox.rows ?? []
+    return { check: rows.filter((r) => ['checking', 'pending', 'extracted'].includes(r.status)).length, all: rows.length }
+  }, [inbox.rows])
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
@@ -598,13 +603,15 @@ export default function App() {
                   pipelineHero.subtitle
                 ) : page === 'inbox' ? (
                   <>
+                    {/* The one-line subtitle, then the gmail / gemini lines. */}
+                    <span className="block">{current.subtitle}</span>
                     {gmail.status.kind === 'connected' && (
-                      <span className="block">
+                      <span className="mt-1 block">
                         <MailStatusLine mail={mail.status} busy={mail.busy} />
                       </span>
                     )}
                     {mail.error && <span className="mt-1 block text-pink">{mail.error}</span>}
-                    <span className={gmail.status.kind === 'connected' ? 'mt-1 block' : undefined}>
+                    <span className="mt-1 block">
                       <GmailStatusLine {...gmailProps} />
                     </span>
                     {gmail.status.kind === 'connected' &&
@@ -629,7 +636,25 @@ export default function App() {
                 page === 'pipeline' ? (
                   load.kind === 'ready' && pipelineHero.aside
                 ) : page === 'inbox' ? (
-                  gmail.status.kind === 'connected' && <CheckMailButton busy={mail.busy} onCheck={mail.check} />
+                  // Counts + [ check mail ], placed and styled like JOBS'
+                  // "328 / 328  [ sync ]".
+                  <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
+                    {inbox.rows && (
+                      <span>
+                        {inboxCounts.check} to check · {inboxCounts.all} {inboxCounts.all === 1 ? 'email' : 'emails'}
+                      </span>
+                    )}
+                    {gmail.status.kind === 'connected' && (
+                      <button
+                        type="button"
+                        onClick={mail.check}
+                        disabled={mail.busy}
+                        className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {mail.busy ? '[ checking… ]' : '[ check mail ]'}
+                      </button>
+                    )}
+                  </div>
                 ) : 
                 page === 'jobs' && (
                   <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">

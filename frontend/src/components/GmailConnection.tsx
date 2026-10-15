@@ -152,20 +152,6 @@ export function GeminiKeyRow({ onChanged }: { onChanged: () => void }) {
   )
 }
 
-// [ check mail ] at the hero's right edge, as on the board: 36px, outlined.
-export function CheckMailButton({ busy, onCheck }: { busy: boolean; onCheck: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onCheck}
-      disabled={busy}
-      className="inline-flex h-9 shrink-0 cursor-pointer items-center border border-rule-strong px-3.5 text-[0.71875rem] text-text hover:border-text-muted hover:bg-bg-hover disabled:cursor-wait disabled:opacity-50"
-    >
-      {busy ? '[ checking… ]' : '[ check mail ]'}
-    </button>
-  )
-}
-
 // The hero's status line (where the subtitle goes). Disconnected:
 // "gmail not connected · nothing new is being checked". Connected:
 // "connected as <address>  [ disconnect ]", under the mail status line.
