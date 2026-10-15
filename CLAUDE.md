@@ -124,7 +124,11 @@ insert a new row.
   are cached in `llm_match_hints` per candidate set (not by dry runs).
   Auto needs exactly one match and ≥ 0.80 for anything that writes a stage
   event, or ≥ 0.60 for attach-only actions with a real single candidate (not
-  one resting on a Gemini pick); ambiguous, unmatched, offers, reopening a closed
+  one resting on a Gemini pick). Exception: when the company matches and
+  it's the user's only open application there, a clear (event-type
+  confidence ≥ 0.8) assessment / interview / rejection goes auto below
+  0.80 (reason "only open application at <co>"); several open there →
+  checking. Ambiguous, unmatched, offers, reopening a closed
   application → `checking`. Auto never moves an application backwards, never
   duplicates a stage that's already recorded (it attaches to that event),
   never creates an application (a matching posting is only suggested), and

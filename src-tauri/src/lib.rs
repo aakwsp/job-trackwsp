@@ -518,6 +518,21 @@ async fn route_reject(app: tauri::AppHandle, email_id: i64) -> Result<(), String
     .await
 }
 
+/// INBOX: takes back a reject (the bottom line's [ undo ]).
+#[tauri::command]
+async fn route_unreject(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
+    off_main_thread(
+        app,
+        move |app| {
+            routing::unreject(&app.state::<SqlitePool>(), email_id)?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
+}
+
 /// INBOX: correct the extracted fields and/or the matched application.
 #[tauri::command]
 async fn route_edit(app: tauri::AppHandle, email_id: i64, edit: routing::Edit) -> Result<routing::Decision, String> {
@@ -718,6 +733,7 @@ pub fn run() {
             route_reject,
             route_edit,
             route_undo,
+            route_unreject,
             inbox_list,
             inbox_ignored,
             inbox_detail,

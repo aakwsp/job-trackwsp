@@ -54,6 +54,9 @@ pub const AUTO_THRESHOLD: f64 = 0.80;
 /// by Gemini). Lower because nothing in PIPELINE changes: mostly ATS
 /// confirmations, which can't earn domain evidence.
 pub const ATTACH_THRESHOLD: f64 = 0.60;
+/// Gemini's event-type confidence at which the type counts as "clear" for
+/// the only-open-application rule.
+pub const TYPE_CLEAR: f64 = 0.8;
 /// A role match counts as "clear" (picks one of several applications at a
 /// company) at this similarity, if it also leads the runner-up by `ROLE_MARGIN`.
 const ROLE_CLEAR: f64 = 0.6;
@@ -104,6 +107,9 @@ pub struct EmailIn {
     pub event_type: String,
     pub event_date: Option<String>,
     pub llm_confidence: f64,
+    /// Gemini's confidence in the event type alone (field_confidence), for
+    /// the only-open-application rule.
+    pub type_confidence: f64,
     /// The user undid / edited / rejected an earlier decision: checking only.
     pub user_touched: bool,
     /// `emails.status` (the Gemini picker only sends extracted / checking).
@@ -233,6 +239,16 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
             by_llm = true;
         }
     }
+    // Only one of them is still open, and this is an assessment or
+    // interview (which can only be about an open application): that one.
+    // Not for a rejection: it could be for the closed application.
+    let type_clear = e.type_confidence >= TYPE_CLEAR;
+    if candidates.len() > 1 && type_clear && matches!(e.event_type.as_str(), "assessment" | "interview") {
+        let open: Vec<&AppSnap> = candidates.iter().copied().filter(|a| stage_index(&a.status).is_some()).collect();
+        if open.len() == 1 {
+            candidates = open;
+        }
+    }
 
     let candidate_ids: Vec<i64> = candidates.iter().map(|a| a.id).collect();
     let matched = (candidates.len() == 1).then(|| candidates[0]);
@@ -312,6 +328,24 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         None
     };
 
+    // The only-open-application rule (applies after the evidence score):
+    // the company is named, it has exactly one open application, and this
+    // is a clear stage change (assessment / interview / rejection). That's
+    // enough to apply it automatically even without role or req id.
+    let only_open = matched.is_some_and(|a| {
+        let named_company = named.as_deref() == Some(a.company_key.as_str()) || from_domain.as_deref() == Some(a.company_key.as_str());
+        let open_here = apps.iter().filter(|o| o.company_key == a.company_key && stage_index(&o.status).is_some()).count();
+        named_company
+            && type_clear
+            && stage_index(&a.status).is_some()
+            && open_here == 1
+            && matches!(e.event_type.as_str(), "assessment" | "interview" | "rejection")
+            && matches!(action, Action::WriteEvent(_))
+    });
+    if only_open {
+        reasons.push(format!("only open application at {}", matched.map(|a| a.company_key.as_str()).unwrap_or("")));
+    }
+
     // 5. Route.
     let note = if e.user_touched {
         Some("you changed this one; not automatic".into())
@@ -327,7 +361,7 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         Some(n)
     } else if e.event_type == "offer" {
         Some("offers are always checked".into())
-    } else if score < threshold(&action, by_llm) {
+    } else if score < threshold(&action, by_llm) && !only_open {
         Some(format!("score {score:.2} below {:.2}", threshold(&action, by_llm)))
     } else {
         None
@@ -515,11 +549,12 @@ fn load_emails(pool: &SqlitePool, only: Option<i64>) -> Result<Vec<EmailIn>, sql
         Option<i64>,
         String,
         Option<String>,
+        Option<String>,
     );
     let rows: Vec<Row> = block_on(
         sqlx::query_as(
             "SELECT e.id, x.id, e.received_at, e.subject, e.from_addr, x.company, x.role, x.req_id,
-                    x.event_type, x.occurred_at, x.confidence, m.user_touched, e.status, e.body_text
+                    x.event_type, x.occurred_at, x.confidence, m.user_touched, e.status, e.body_text, x.field_confidence
              FROM emails e
              JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
              LEFT JOIN email_matches m ON m.email_id = e.id
@@ -548,6 +583,13 @@ fn load_emails(pool: &SqlitePool, only: Option<i64>) -> Result<Vec<EmailIn>, sql
             status: r.12,
             body: r.13,
             llm_pick: None,
+            // The event-type field's own confidence, else the overall one.
+            type_confidence: r
+                .14
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .and_then(|v| v["event_type"].as_f64())
+                .unwrap_or(r.10.unwrap_or(0.0)),
         })
         .collect())
 }
@@ -790,7 +832,16 @@ pub fn confirm(pool: &SqlitePool, email_id: i64, application_id: Option<i64>, cr
             block_on(sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(job).fetch_optional(pool))
                 .map_err(|e| e.to_string())?
         }
-        (None, None) => None,
+        // No application given: the one already matched (by routing, or by
+        // the user with [ change match ]). Re-matching from scratch here
+        // would throw a re-matched email back into ambiguity.
+        (None, None) => block_on(
+            sqlx::query_scalar::<_, Option<i64>>("SELECT application_id FROM email_matches WHERE email_id = ?")
+                .bind(email_id)
+                .fetch_optional(pool),
+        )
+        .map_err(|e| e.to_string())?
+        .flatten(),
     };
     let e = one_email(pool, email_id)?;
     let apps = load_apps(pool).map_err(|e| e.to_string())?;
@@ -811,6 +862,25 @@ pub fn reject(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
         sqlx::query("UPDATE emails SET status = 'rejected' WHERE id = ?").bind(email_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE email_matches SET user_touched = 1 WHERE email_id = ?").bind(email_id).execute(&mut *tx).await?;
         sqlx::query("UPDATE extractions SET state = 'rejected' WHERE id = (SELECT MAX(id) FROM extractions WHERE email_id = ?)")
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Takes back a reject: the email goes back to checking (and stays out of
+/// auto). For the bottom line's [ undo ] after rejecting in INBOX.
+pub fn unreject(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
+    let status = email_status(pool, email_id)?;
+    if status != "rejected" {
+        return Err(format!("email is {status}; nothing to un-reject"));
+    }
+    block_on(async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE emails SET status = 'checking' WHERE id = ?").bind(email_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE extractions SET state = 'pending' WHERE id = (SELECT MAX(id) FROM extractions WHERE email_id = ?)")
             .bind(email_id)
             .execute(&mut *tx)
             .await?;
@@ -931,6 +1001,7 @@ mod tests {
             event_type: event.into(),
             event_date: Some("2026-09-20".into()),
             llm_confidence: 0.97,
+            type_confidence: 0.95,
             user_touched: false,
             status: "extracted".into(),
             body: None,
@@ -1040,6 +1111,7 @@ mod tests {
         // interview email so it would write an event).
         let one = vec![app(15, "Atlassian", "Software Engineer Intern, 2027 Canada", None, "applied", &[(150, "applied")])];
         let mut e = email(2, "interview", Some("Atlassian"), Some("Software Engineer Intern, 2027 Canada"), None, "a@talent.icims.com");
+        e.type_confidence = 0.5; // keep the only-open-application rule out of it
         let before = decide(&e, &one, &[], None);
         e.body = Some("Thank you again for your interest in the Software Engineer Intern, 2027 Canada position.".into());
         let after = decide(&e, &one, &[], None);
@@ -1198,9 +1270,50 @@ mod tests {
         let d = decide(&e, &apps, &[], None);
         assert!(d.score >= ATTACH_THRESHOLD && d.score < AUTO_THRESHOLD, "{}", d.score);
         assert_eq!((d.action.clone(), d.route), (Action::AttachEvent(40), Route::Auto));
-        // The same evidence for a stage change (interview) stays checking.
-        let d = decide(&email(2, "interview", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com"), &apps, &[], None);
+        // The same evidence for a stage change (interview) stays checking
+        // (with an unclear type, so the only-open-application rule doesn't
+        // apply; that rule has its own test).
+        let mut interview = email(2, "interview", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com");
+        interview.type_confidence = 0.5;
+        let d = decide(&interview, &apps, &[], None);
         assert_eq!((d.action, d.route), (Action::WriteEvent("interview".into()), Route::Checking));
+    }
+
+    #[test]
+    fn the_only_open_application_takes_clear_stage_changes() {
+        // KPMG-like: ATS sender, no role or req id, one open application.
+        let one = vec![app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")])];
+        let e = email(1, "interview", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        let d = decide(&e, &one, &[], None);
+        assert!(d.score < AUTO_THRESHOLD, "{}", d.score);
+        assert_eq!((d.action.clone(), d.route), (Action::WriteEvent("interview".into()), Route::Auto));
+        assert!(d.reasons.iter().any(|r| r == "only open application at kpmg"));
+
+        // The type isn't clear: checking.
+        let mut vague = email(2, "interview", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        vague.type_confidence = 0.5;
+        assert_eq!(decide(&vague, &one, &[], None).route, Route::Checking);
+
+        // Two open applications at the company: checking.
+        let two = vec![
+            app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")]),
+            app(5, "KPMG", "Data Analyst Intern", None, "applied", &[(50, "applied")]),
+        ];
+        assert_eq!(decide(&e, &two, &[], None).route, Route::Checking);
+
+        // One open + one closed: an interview goes to the open one...
+        let mixed = vec![
+            app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")]),
+            app(6, "KPMG", "Audit Intern", None, "rejected", &[(60, "applied"), (61, "rejected")]),
+        ];
+        let d = decide(&e, &mixed, &[], None);
+        assert_eq!((d.application_id, d.route), (Some(4), Route::Auto));
+        // ...but a rejection could be for either: checking.
+        let rej = email(3, "rejection", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        assert_eq!(decide(&rej, &mixed, &[], None).route, Route::Checking);
+        // Offers still always wait.
+        let offer = email(4, "offer", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        assert_eq!(decide(&offer, &one, &[], None).route, Route::Checking);
     }
 
     #[test]
@@ -1412,6 +1525,50 @@ mod tests {
             let raw = crate::extract::gemini::LlmClient::generate(&client, &model, picker::SYSTEM, &user, &picker::schema());
             println!("email {id} ({} candidates): {raw:?}", cands.len());
         }
+    }
+
+    /// The bug from the first on-screen check: an ambiguous email, re-matched
+    /// with [ change match ], then confirmed without an application id.
+    #[test]
+    fn confirm_uses_the_stored_match_and_reject_can_be_taken_back() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        block_on(async {
+            for t in ["Backend Intern", "Frontend Intern"] {
+                sqlx::query("INSERT INTO applications (company, title) VALUES ('Acme', ?)").bind(t).execute(&pool).await.unwrap();
+            }
+            for id in sqlx::query_scalar::<_, i64>("SELECT id FROM applications").fetch_all(&pool).await.unwrap() {
+                sqlx::query("INSERT INTO application_events (application_id, type, occurred_at) VALUES (?, 'applied', '2026-09-01T00:00:00Z')")
+                    .bind(id).execute(&pool).await.unwrap();
+            }
+            let e: i64 = sqlx::query_scalar(
+                "INSERT INTO emails (gmail_id, from_addr, subject, received_at, status)
+                 VALUES ('g', 'x@talent.icims.com', 's', '2026-09-02T00:00:00Z', 'checking') RETURNING id",
+            ).fetch_one(&pool).await.unwrap();
+            sqlx::query("INSERT INTO extractions (email_id, company, event_type, confidence) VALUES (?, 'Acme', 'applied', 0.9)")
+                .bind(e).execute(&pool).await.unwrap();
+        });
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        // Ambiguous: confirming with nothing picked fails, as it should.
+        assert!(confirm(&pool, email, None, None).is_err());
+        // [ change match ] → app 2, then [ confirm ] with no id: uses it.
+        edit(&pool, email, Edit { application_id: Some(2), ..Default::default() }).unwrap();
+        confirm(&pool, email, None, None).unwrap();
+        let (status, app): (String, Option<i64>) = block_on(
+            sqlx::query_as("SELECT e.status, m.application_id FROM emails e JOIN email_matches m ON m.email_id = e.id").fetch_one(&pool),
+        )
+        .unwrap();
+        assert_eq!((status.as_str(), app), ("confirmed", Some(2)));
+
+        // Reject, then take it back: checking again.
+        undo(&pool, email).unwrap();
+        reject(&pool, email).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "rejected");
+        unreject(&pool, email).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "checking");
+        assert!(unreject(&pool, email).is_err());
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The dry run on a COPY of the real database. Not run by default:

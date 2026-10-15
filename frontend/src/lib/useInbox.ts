@@ -7,7 +7,11 @@ import type { IgnoredRow, InboxDetail, InboxJob, InboxRow } from '../types'
 // list. Rust emits `inbox-changed` after routing runs and INBOX actions,
 // and `mail-polled` after polls and extraction; both refresh this, so the
 // lists keep themselves current with no polling from React.
-export function useInbox(active: boolean) {
+// `notify` puts a line on the app's bottom bar (always visible, unlike the
+// pane), optionally with an undo; errors go there too.
+export type Notify = (t: { text: string; onUndo?: () => void }) => void
+
+export function useInbox(active: boolean, notify: Notify) {
   const [rows, setRows] = useState<InboxRow[] | null>(null)
   const [openId, setOpenId] = useState<number | null>(null)
   const [detail, setDetail] = useState<InboxDetail | null>(null)
@@ -70,18 +74,52 @@ export function useInbox(active: boolean) {
     if (markRead) api.inboxSetRead(id, true).catch((e) => setError(String(e)))
   }, [])
 
-  // Runs a routing action, then reloads (the event usually does that too;
-  // this makes it immediate even if the event arrives late).
-  async function act(fn: () => Promise<unknown>) {
+  // Runs a routing action, then reloads at once: the open email's detail
+  // straight away (so [ use this ] etc. show their effect immediately),
+  // and the lists via `version` (the event would too, maybe later).
+  // Resolves true on success; a failure is shown on the bottom line, which
+  // is always on screen.
+  async function act(fn: () => Promise<unknown>): Promise<boolean> {
     setError(null)
+    let ok = true
     try {
       await fn()
     } catch (e) {
+      ok = false
       setError(String(e))
-    } finally {
-      setVersion((v) => v + 1)
+      notify({ text: String(e) })
     }
+    if (openId !== null) {
+      try {
+        setDetail(await api.inboxDetail(openId))
+      } catch {
+        // the version bump below retries
+      }
+    }
+    setVersion((v) => v + 1)
+    return ok
   }
 
-  return { rows, ignored, jobs, query, setQuery, searched: applied, openId, detail: detail && detail.email.id === openId ? detail : null, error, open, act, setError }
+  // Updates one row in place, ahead of the reload (an email confirmed or
+  // rejected leaves // checking at once).
+  function patchRow(id: number, patch: Partial<InboxRow>) {
+    setRows((rs) => rs && rs.map((r) => (r.id === id ? { ...r, ...patch } : r)))
+  }
+
+  return {
+    rows,
+    ignored,
+    jobs,
+    query,
+    setQuery,
+    searched: applied,
+    openId,
+    detail: detail && detail.email.id === openId ? detail : null,
+    error,
+    open,
+    act,
+    patchRow,
+    notify,
+    setError,
+  }
 }

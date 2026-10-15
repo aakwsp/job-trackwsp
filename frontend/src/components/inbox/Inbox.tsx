@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useStuck } from '../../lib/useStuck'
 import * as api from '../../api'
 import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
@@ -35,8 +36,16 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // loading, re-running every memo and effect below.
   const rows = useMemo(() => inbox.rows ?? [], [inbox.rows])
 
-  const checking = useMemo(() => sortRows(rows.filter((r) => r.status === 'checking'), sort), [rows, sort])
-  const all = useMemo(() => sortRows(rows.filter((r) => r.status !== 'checking'), sort), [rows, sort])
+  // Sections by state: // checking (needs you; also mail still waiting
+  // for Gemini or routing), // auto (applied automatically, untouched),
+  // // checked (you confirmed or rejected it). The sort applies inside each.
+  const checking = useMemo(
+    () => sortRows(rows.filter((r) => r.status === 'checking' || r.status === 'pending' || r.status === 'extracted'), sort),
+    [rows, sort],
+  )
+  const autoRows = useMemo(() => sortRows(rows.filter((r) => r.status === 'auto'), sort), [rows, sort])
+  const checked = useMemo(() => sortRows(rows.filter((r) => r.status === 'confirmed' || r.status === 'rejected'), sort), [rows, sort])
+  const all = useMemo(() => [...autoRows, ...checked], [autoRows, checked])
 
   // Something is always open, like the board: the first checking email,
   // else the newest. Not marked read: only an explicit open does that.
@@ -61,7 +70,17 @@ export default function Inbox({ inbox, top, connected }: Props) {
   const current = rows.find((r) => r.id === openId)
   // j/k walk this order: checking, then all mail (by email), or the
   // applications (by job).
-  const order = useMemo(() => [...checking, ...all].map((r) => r.id), [checking, all])
+  const order = useMemo(() => [...checking, ...autoRows, ...checked].map((r) => r.id), [checking, autoRows, checked])
+
+  // After confirm / reject: the email leaves // checking now (patched
+  // ahead of the reload), and the next checking email opens.
+  function resolved(id: number, status: InboxRow['status']) {
+    const ids = checking.map((r) => r.id)
+    const i = ids.indexOf(id)
+    const next = ids[i + 1] ?? ids[i - 1]
+    inbox.patchRow(id, { status })
+    if (next !== undefined) open(next, false)
+  }
   const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
   const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob, searchOpen })
   useEffect(() => {
@@ -149,10 +168,22 @@ export default function Inbox({ inbox, top, connected }: Props) {
             </>
           )
         )}
-        <Band count={all.length} top={checking.length > 0 || connected || !!top}>
-          // all mail
-        </Band>
-        <RowList rows={all} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+        {autoRows.length > 0 && (
+          <>
+            <Band count={autoRows.length} top={checking.length > 0 || connected || !!top}>
+              // auto
+            </Band>
+            <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+          </>
+        )}
+        {checked.length > 0 && (
+          <>
+            <Band count={checked.length} top={checking.length > 0 || autoRows.length > 0 || connected || !!top}>
+              // checked
+            </Band>
+            <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+          </>
+        )}
         {inbox.searched && rows.length === 0 && (
           <p className="py-6 pr-5 pl-6 text-meta text-text-dim">nothing matches “{inbox.searched}”.</p>
         )}
@@ -173,7 +204,14 @@ export default function Inbox({ inbox, top, connected }: Props) {
       <section aria-label="detail" className="sticky top-0 flex max-h-[calc(100vh-4.5rem)] min-w-0 flex-col self-start overflow-y-auto">
         {inbox.error && <p className="border-b border-rule px-8 py-2 text-meta text-pink">{inbox.error}</p>}
         {inbox.detail ? (
-          <InboxDetailPane detail={inbox.detail} act={inbox.act} large={mode === 'job'} onOpenEmail={(id) => open(id)} />
+          <InboxDetailPane
+            detail={inbox.detail}
+            act={inbox.act}
+            notify={inbox.notify}
+            onResolved={resolved}
+            large={mode === 'job'}
+            onOpenEmail={(id) => open(id)}
+          />
         ) : (
           <p className="px-8 py-10 text-meta text-text-dim">{inbox.rows ? 'no mail yet.' : 'loading…'}</p>
         )}
@@ -249,10 +287,12 @@ function JobList({
   return (
     <>
       {groups.map(([co, js]) => (
+        // Each group is the sticky header's containing block, so the next
+        // company's header pushes this one up instead of overlapping it.
         <div key={co} className="border-b border-rule">
-          <div className="pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05]">
+          <CompanyHeader>
             <Hl text={co} query={query} />
-          </div>
+          </CompanyHeader>
           <ul className="m-0 list-none p-0 pb-2">
             {js.map((j) => {
               const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
@@ -317,6 +357,23 @@ export function Band({ children, count, top = false }: { children: ReactNode; co
     >
       <h2 className="font-mono">{children}</h2>
       {count !== undefined && <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>}
+    </div>
+  )
+}
+
+// A company header in the by-job list: sticky (same surface as the list),
+// with a hairline only while it's stuck.
+function CompanyHeader({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const stuck = useStuck(ref)
+  return (
+    <div
+      ref={ref}
+      className={`sticky top-[-1px] z-10 border-b bg-bg pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05] ${
+        stuck ? 'border-rule' : 'border-transparent'
+      }`}
+    >
+      {children}
     </div>
   )
 }

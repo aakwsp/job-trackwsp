@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useStuck } from '../../lib/useStuck'
+import type { Notify } from '../../lib/useInbox'
 import * as api from '../../api'
 import type { InboxDetail, RouteEdit } from '../../types'
 import { eventColor, eventLabel, localDayTime } from '../../lib/inbox'
@@ -13,7 +15,10 @@ import Select from '../Select'
 
 type Props = {
   detail: InboxDetail
-  act: (fn: () => Promise<unknown>) => Promise<void>
+  act: (fn: () => Promise<unknown>) => Promise<boolean>
+  notify: Notify
+  // Confirmed / rejected: the list moves on to the next checking email.
+  onResolved: (emailId: number, status: 'confirmed' | 'rejected') => void
   // By-job view: the larger timeline with labels.
   large: boolean
   onOpenEmail: (emailId: number) => void
@@ -33,7 +38,7 @@ const TYPES = ['applied', 'assessment', 'interview', 'offer', 'rejection', 'foll
 /** Gemini's per-field confidence under this marks the field (pink square). */
 const LOW_FIELD = 0.8
 
-export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Props) {
+export default function InboxDetailPane({ detail, act, notify, onResolved, large, onOpenEmail }: Props) {
   const { email, extraction: x, match: m } = detail
   // Edit / change-match state remembers which email it belongs to, so
   // opening another email drops it without an effect to reset it.
@@ -83,16 +88,29 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
 
   // The actions, shared by the buttons and the keys.
   const canConfirm = isChecking && (!!app || !!m?.suggested_job)
-  const confirm = () =>
-    act(async () => {
+  // "google · applied" for the bottom line.
+  const what = `${(app?.company ?? x?.company ?? '').toLowerCase()} · ${eventLabel(edits.event_type ?? x?.event_type ?? null)}`
+  const confirm = async () => {
+    const id = email.id
+    const ok = await act(async () => {
       if (editing) await saveEdits()
-      // With no application but a suggested posting, confirm creates the
-      // application from it (the only way mail ever creates one).
+      // The matched application (routing's, or the one picked with
+      // [ change match ]). With none but a suggested posting, confirm
+      // creates the application from it (the only way mail creates one).
       const fromJob = !app && m?.suggested_job ? m.suggested_job.id : null
-      await api.routeConfirm(email.id, null, fromJob)
+      await api.routeConfirm(id, app?.id ?? null, fromJob)
       stopEditing()
     })
-  const reject = () => act(() => api.routeReject(email.id))
+    if (!ok) return
+    onResolved(id, 'confirmed')
+    notify({ text: `confirmed: ${what}`, onUndo: () => act(() => api.routeUndo(id)) })
+  }
+  const reject = async () => {
+    const id = email.id
+    if (!(await act(() => api.routeReject(id)))) return
+    onResolved(id, 'rejected')
+    notify({ text: `rejected: ${what}`, onUndo: () => act(() => api.routeUnreject(id)) })
+  }
   const toggleEdit = () => (editing ? act(saveEdits).then(stopEditing) : setEditingFor(email.id))
 
   // c confirm · e edit · x reject · esc leaves editing / change match.
@@ -124,17 +142,27 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
 
   return (
     <>
-      {detail.timeline.length > 0 && (
-        <>
-          <Band first aside={`${(app?.company ?? '').toLowerCase()} · ${detail.timeline.length} ${detail.timeline.length === 1 ? 'email' : 'emails'}`}>
-            // timeline
-          </Band>
-          <EmailTimeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
-        </>
-      )}
-      <Band first={detail.timeline.length === 0} flush={detail.timeline.length > 0}>
-        // email
-      </Band>
+      <Pinned>
+        {/* company · role, pinned with the timeline while the body scrolls. */}
+        <p className="truncate px-8 pt-3 pb-2.5 text-meta leading-normal">
+          <span className="font-serif text-[1.0625rem] lowercase">{(app?.company ?? x?.company ?? email.from_addr ?? '').toLowerCase()}</span>
+          {(app?.title ?? x?.role) && (
+            <>
+              <span className="text-text-dim"> · </span>
+              <span className="text-text-muted lowercase">{app?.title ?? x?.role}</span>
+            </>
+          )}
+        </p>
+        {detail.timeline.length > 0 && (
+          <>
+            <Band flush aside={`${(app?.company ?? '').toLowerCase()} · ${detail.timeline.length} ${detail.timeline.length === 1 ? 'email' : 'emails'}`}>
+              // timeline
+            </Band>
+            <EmailTimeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
+          </>
+        )}
+      </Pinned>
+      <Band flush>// email</Band>
       <div className="px-8 pt-1.5">
         <dl className="m-0 grid grid-cols-[7.5rem_minmax(0,1fr)] text-meta leading-normal">
           <Dt first>from</Dt>
@@ -339,6 +367,18 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
         j/k next/prev · ←/→ along timeline · c confirm · e edit · x reject · m read/unread · g by email/by job · esc stop editing
       </p>
     </>
+  )
+}
+
+// The top of the detail pane that stays put while the rest scrolls: same
+// surface as the pane, a hairline under it only while it's stuck.
+function Pinned({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const stuck = useStuck(ref)
+  return (
+    <div ref={ref} className={`sticky top-[-1px] z-10 shrink-0 border-b bg-bg ${stuck ? 'border-rule' : 'border-transparent'}`}>
+      {children}
+    </div>
   )
 }
 

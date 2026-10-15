@@ -86,6 +86,7 @@ export const routeConfirm = (emailId: number, applicationId: number | null, crea
 export const routeReject = (emailId: number) => invoke<void>('route_reject', { emailId })
 export const routeEdit = (emailId: number, edit: RouteEdit) => invoke<unknown>('route_edit', { emailId, edit })
 export const routeUndo = (emailId: number) => invoke<void>('route_undo', { emailId })
+export const routeUnreject = (emailId: number) => invoke<void>('route_unreject', { emailId })
 // [ not ignored ]: re-fetches the email from Gmail and re-parses it.
 export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
 export const inboxJobs = (query: string | null) => invoke<InboxJob[]>('inbox_jobs', { query })

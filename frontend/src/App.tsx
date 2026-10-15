@@ -94,7 +94,7 @@ export default function App() {
   // The mail poller's status line, only meaningful once connected.
   const mail = useMail(page === 'inbox' && gmail.status.kind === 'connected')
   // INBOX's lists and detail (JT-18).
-  const inbox = useInbox(page === 'inbox')
+  const inbox = useInbox(page === 'inbox', (t) => setToast(t))
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
