@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import * as api from '../../api'
 import type { InboxDetail, RouteEdit } from '../../types'
 import { eventColor, eventLabel, localDayTime } from '../../lib/inbox'
@@ -79,6 +79,47 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
   const app = m?.application ?? null
   const writes = m?.action.startsWith('write_event:') ? m.action.slice('write_event:'.length) : null
   const effect = effectLine(email.status, detail, writes, editing)
+
+  // The actions, shared by the buttons and the keys.
+  const canConfirm = isChecking && (!!app || !!m?.suggested_job)
+  const confirm = () =>
+    act(async () => {
+      if (editing) await saveEdits()
+      // With no application but a suggested posting, confirm creates the
+      // application from it (the only way mail ever creates one).
+      const fromJob = !app && m?.suggested_job ? m.suggested_job.id : null
+      await api.routeConfirm(email.id, null, fromJob)
+      stopEditing()
+    })
+  const reject = () => act(() => api.routeReject(email.id))
+  const toggleEdit = () => (editing ? act(saveEdits).then(stopEditing) : setEditingFor(email.id))
+
+  // c confirm · e edit · x reject · esc leaves editing / change match.
+  // Through a ref, like the list's keys, so the handler sees this render.
+  const keys = useRef({ canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, changing })
+  useEffect(() => {
+    keys.current = { canConfirm, isChecking, isDone, confirm, reject, toggleEdit, editing, changing }
+  })
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+      const k = keys.current
+      if (e.key === 'Escape') {
+        if (!k.editing && !k.changing) return
+        setEditingFor(null)
+        setEdits({})
+        setChangingFor(null)
+      } else if (e.target instanceof Element && e.target.closest('input, textarea, select')) {
+        return
+      } else if (e.key === 'c' && k.canConfirm) k.confirm()
+      else if (e.key === 'e' && (k.isChecking || k.isDone)) k.toggleEdit()
+      else if (e.key === 'x' && k.isChecking) k.reject()
+      else return
+      e.preventDefault()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   return (
     <>
@@ -268,31 +309,21 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
             <>
               <button
                 type="button"
-                onClick={() =>
-                  act(async () => {
-                    if (editing) await saveEdits()
-                    // With no application but a suggested posting, confirm
-                    // creates the application from it (the only way mail
-                    // ever creates one).
-                    const fromJob = !app && m?.suggested_job ? m.suggested_job.id : null
-                    await api.routeConfirm(email.id, null, fromJob)
-                    stopEditing()
-                  })
-                }
-                disabled={!app && !m?.suggested_job}
+                onClick={confirm}
+                disabled={!canConfirm}
                 className={`${primaryButton} disabled:cursor-default disabled:opacity-40`}
               >
                 {!app && m?.suggested_job ? '[ create application from posting ]' : '[ confirm ]'}
               </button>
-              <EditButton editing={editing} onToggle={() => (editing ? act(saveEdits).then(stopEditing) : setEditingFor(email.id))} />
-              <button type="button" onClick={() => act(() => api.routeReject(email.id))} className={outlineButton}>
+              <EditButton editing={editing} onToggle={toggleEdit} />
+              <button type="button" onClick={reject} className={outlineButton}>
                 [ reject ]
               </button>
             </>
           )}
           {isDone && (
             <>
-              <EditButton editing={editing} onToggle={() => (editing ? act(saveEdits).then(stopEditing) : setEditingFor(email.id))} />
+              <EditButton editing={editing} onToggle={toggleEdit} />
               <button type="button" onClick={() => act(() => api.routeUndo(email.id))} className={outlineButton}>
                 [ undo ]
               </button>
@@ -302,7 +333,7 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
         <p className="mt-3.5 text-[0.71875rem] leading-[1.6] text-text-muted">{effect}</p>
       </div>
       <p className="px-8 pt-[1.625rem] pb-7 text-micro leading-[1.8] text-text-dim">
-        j/k next/prev · ←/→ along timeline · c confirm · e edit · x reject · m read/unread · g by email/by job · esc close
+        j/k next/prev · ←/→ along timeline · c confirm · e edit · x reject · m read/unread · g by email/by job · esc stop editing
       </p>
     </>
   )

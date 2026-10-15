@@ -12,14 +12,16 @@ import InboxDetailPane from './InboxDetail'
 
 type Props = {
   inbox: ReturnType<typeof useInbox>
-  // Shown at the top of the list column (the empty / disconnected states).
+  // Shown at the top of the list column (the disconnected state).
   top?: ReactNode
+  // Gmail is connected: an empty // checking then says "nothing to check".
+  connected: boolean
 }
 
 type Mode = 'email' | 'job'
 type JobSort = 'activity' | 'company'
 
-export default function Inbox({ inbox, top }: Props) {
+export default function Inbox({ inbox, top, connected }: Props) {
   // `g` toggles by email / by job.
   const [mode, setMode] = useState<Mode>('email')
   const [jobSort, setJobSort] = useState<JobSort>('activity')
@@ -54,16 +56,33 @@ export default function Inbox({ inbox, top }: Props) {
   // email's timeline. A ref keeps the handler reading current values
   // without re-subscribing every render.
   const current = rows.find((r) => r.id === openId)
-  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId })
+  // j/k walk this order: checking, then all mail (by email), or the
+  // applications (by job).
+  const order = useMemo(() => [...checking, ...all].map((r) => r.id), [checking, all])
+  const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
+  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob })
   useEffect(() => {
-    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId }
+    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      const { current: r, timeline, openId: id } = keyState.current
-      if (e.key === 'm' && r) {
+      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob } = keyState.current
+      if (e.key === 'j' || e.key === 'k') {
+        const step = e.key === 'j' ? 1 : -1
+        if (md === 'job') {
+          const next = jobs[jobs.indexOf(job ?? -1) + step] ?? (job === null ? jobs[0] : undefined)
+          if (next === undefined) return
+          goJob(next)
+        } else {
+          const next = ids[ids.indexOf(id ?? -1) + step] ?? (id === null ? ids[0] : undefined)
+          if (next === undefined) return
+          inbox.open(next)
+          // Keep the newly open row in view as j/k walk the list.
+          document.querySelector(`[data-inbox-row="${next}"]`)?.scrollIntoView({ block: 'nearest' })
+        }
+      } else if (e.key === 'm' && r) {
         inbox.act(() => api.inboxSetRead(r.id, !r.read))
       } else if (e.key === 'g') {
         setMode((m) => (m === 'email' ? 'job' : 'email'))
@@ -88,13 +107,25 @@ export default function Inbox({ inbox, top }: Props) {
           <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} />
         ) : (
           <>
-        {checking.length > 0 && (
+        {checking.length > 0 ? (
           <>
             <Band count={checking.length}>// checking</Band>
             <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} />
           </>
+        ) : (
+          connected &&
+          inbox.rows && (
+            // The InboxEmpty board: the section stays, saying so.
+            <>
+              <Band count={0}>// checking</Band>
+              <div className="border-b border-rule pt-[1.375rem] pr-5 pb-6 pl-6">
+                <p className="font-serif text-[1.375rem] leading-[1.1] text-text-dim">nothing to check.</p>
+                <p className="mt-2 text-[0.65625rem] text-text-dim">low-confidence mail lands here for a manual look.</p>
+              </div>
+            </>
+          )
         )}
-        <Band count={all.length} top={checking.length > 0 || !!top}>
+        <Band count={all.length} top={checking.length > 0 || connected || !!top}>
           // all mail
         </Band>
         <RowList rows={all} openId={openId} onOpen={(id) => open(id)} />

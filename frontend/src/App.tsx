@@ -735,7 +735,7 @@ export default function App() {
             ) : (
               <>
                 {page === 'inbox' ? (
-                  <Inbox inbox={inbox} top={<GmailConnectBlock {...gmailProps} />} />
+                  <Inbox inbox={inbox} connected={gmail.status.kind === 'connected'} top={<GmailConnectBlock {...gmailProps} />} />
                 ) : (
                   <Placeholder what={current.title} />
                 )}
