@@ -98,10 +98,3 @@ Only include:
 2. Closing soon: known postings with `applied` false and a deadline within 7 days.
 3. Closed: known postings you marked closed this run.
 4. Coverage: which source sections you completed or skipped, and counts: inserted / updated / skipped.
-
-Deadlines are frequently missed. Before recording a posting, check the actual
-posting page for a closing date — it is often in the body text ("applications
-close", "apply by", "deadline"), in a sidebar field, or only visible on the
-employer's own ATS page rather than on an aggregator. Record it as `deadline`.
-Only leave `deadline` empty when the posting itself states it is rolling or
-shows no date anywhere on the page.

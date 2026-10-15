@@ -13,6 +13,7 @@ export type Job = {
   borderline: boolean
   borderline_reason: string | null
   source: string | null
+  first_seen: string | null // 'YYYY-MM-DD'
   last_seen: string | null
   applied: boolean
 }
@@ -25,15 +26,22 @@ export type SyncCounts = {
   skipped: number
 }
 
+// What the diamond says about a posting. Past due shares sand with rolling
+// but is its own status, so it can have its own label and filter row.
+export type StatusKey = 'applied' | 'closing' | 'deadline' | 'rolling' | 'pastdue'
+
+// The square flags. Keys of `FLAGS` in lib/jobs.ts.
+export type FlagKey = 'stale' | 'borderline'
+
+// Checked rows in each filter group. Empty = that group doesn't filter.
+// Within a group it's OR (any checked row matches); across groups AND.
 export type Filters = {
   query: string
-  city: string // '' = any
-  source: string // '' = any
-  unappliedOnly: boolean
-  closingOnly: boolean
-  hideBorderline: boolean
+  city: string // substring of the city, '' = any
+  statuses: StatusKey[]
+  flags: FlagKey[]
 }
 
-// What decides a row's 3px left edge. Matches the `data-status` selectors
-// on `.row` in index.css.
-export type RowStatus = 'applied' | 'closing' | 'borderline' | 'none'
+// The four status colours, shared by the stripe, the diamond and the flag
+// squares. Matches the `data-color` selectors in index.css.
+export type StatusColor = 'green' | 'pink' | 'blue' | 'sand'

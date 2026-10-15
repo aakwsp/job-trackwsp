@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import * as api from './api'
 import type { Filters, Job } from './types'
-import { EMPTY_FILTERS, NO_CITY, distinct, groupByCity, matchesFilters } from './lib/jobs'
+import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
+import { loadFilters, rowCounts, saveFilters } from './lib/filters'
+import { loadView, saveView, type ViewMode } from './lib/view'
+import { useUiScale } from './lib/useUiScale'
 import FilterBar from './components/FilterBar'
 import CityGroup from './components/CityGroup'
+import JobDetail from './components/JobDetail'
 
 // One value instead of separate `loading` / `jobs` / `error` so impossible
 // combinations (loading *and* errored) can't happen. `kind` is the tag
@@ -14,13 +18,25 @@ export default function App() {
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' })
   // Bumping this re-runs the fetch effect (retry, or after a sync).
   const [reloadKey, setReloadKey] = useState(0)
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS)
+  // Lazy initializer, like `view` below: last session's filters, read once.
+  const [filters, setFilters] = useState<Filters>(loadFilters)
   // Collapsed city names. A Set, replaced (never mutated) on every change so
   // React sees a new value.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  // Passing a function (not `loadView()`) makes it a lazy initializer:
+  // React calls it once on mount instead of reading storage every render.
+  const [view, setView] = useState<ViewMode>(loadView)
+  const scale = useUiScale()
   const [syncing, setSyncing] = useState(false)
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
+  // Job ids applied since the last [ sync ]; the detail card offers
+  // [ undo ] for these.
+  const [recentlyApplied, setRecentlyApplied] = useState<ReadonlySet<number>>(new Set())
+  // The posting shown in the detail card. An id rather than the Job itself,
+  // so the card reads the live row from `jobs` and sees [ mark applied ]
+  // take effect instead of holding a stale copy.
+  const [selectedId, setSelectedId] = useState<number | null>(null)
 
   useEffect(() => {
     // If the effect re-runs (or StrictMode mounts twice in dev) before the
@@ -41,10 +57,28 @@ export default function App() {
   // useMemo: only recompute when the inputs change, not on every render
   // (e.g. while `syncing` flips). Cheap at 218 rows, but it also keeps the
   // derived data out of state, so it can never drift from `jobs`.
-  const cities = useMemo(() => distinct(jobs, 'city'), [jobs])
-  const sources = useMemo(() => distinct(jobs, 'source'), [jobs])
-  const visible = useMemo(() => jobs.filter((j) => matchesFilters(j, filters)), [jobs, filters])
+  const visible = useMemo(
+    () => jobs.filter((j) => matchesFilters(j, filters)),
+    [jobs, filters],
+  )
   const groups = useMemo(() => groupByCity(visible), [visible])
+  const selected = jobs.find((j) => j.id === selectedId) ?? null
+  // useCallback returns the *same* function across renders. JobDetail's
+  // effect lists `onClose` as a dependency; a fresh arrow each render would
+  // re-run that effect (and re-grab focus) every time App re-renders.
+  const closeDetail = useCallback(() => setSelectedId(null), [])
+  const counts = useMemo(() => rowCounts(jobs, filters), [jobs, filters])
+
+  // Every filter change goes through here so it's saved for next launch.
+  function changeFilters(next: Filters) {
+    setFilters(next)
+    saveFilters(next)
+  }
+
+  function changeView(v: ViewMode) {
+    setView(v)
+    saveView(v)
+  }
 
   function retry() {
     setLoad({ kind: 'loading' })
@@ -59,14 +93,30 @@ export default function App() {
     )
   }
 
-  // Optimistic: update the row now, roll back if Rust says no.
-  async function toggleApplied(job: Job) {
-    const next = !job.applied
-    patchApplied(job.id, next)
+  // [ mark applied ] in the detail card. Optimistic: the row flips now and
+  // rolls back if Rust says no.
+  async function markApplied(job: Job) {
+    patchApplied(job.id, true)
+    setRecentlyApplied((prev) => new Set(prev).add(job.id))
     try {
-      await api.setApplied(job.id, next)
+      await api.setApplied(job.id, true)
     } catch (e) {
-      patchApplied(job.id, job.applied)
+      patchApplied(job.id, false)
+      setNotice(String(e))
+    }
+  }
+
+  async function undo(job: Job) {
+    patchApplied(job.id, false)
+    try {
+      await api.setApplied(job.id, false)
+      setRecentlyApplied((prev) => {
+        const next = new Set(prev)
+        next.delete(job.id)
+        return next
+      })
+    } catch (e) {
+      patchApplied(job.id, true)
       setNotice(String(e))
     }
   }
@@ -85,6 +135,9 @@ export default function App() {
     setNotice(null)
     try {
       const c = await api.syncNow()
+      // "Until the next sync": applied rows lose [ undo ] and, with show
+      // applied off, drop out of the list on the reload below.
+      setRecentlyApplied(new Set())
       setNotice(`synced: ${c.inserted} new · ${c.updated} updated · ${c.merged} merged · ${c.skipped} skipped`)
       setReloadKey((k) => k + 1)
     } catch (e) {
@@ -104,14 +157,15 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen">
-      {/* `sticky top-0` keeps the header + filters pinned while the list
-          scrolls under them; it needs a solid background (`bg-bg`) or the
-          rows would show through. */}
-      <header className="sticky top-0 z-10 border-b border-rule-strong bg-bg">
+    // A full-height column: the header keeps its natural height and <main>
+    // takes the rest (`flex-1`) and scrolls on its own (`overflow-y-auto`).
+    // Because <main> is the scroll container, the city bands can use
+    // `sticky top-0` without knowing how tall the header is.
+    <div className="flex h-screen flex-col">
+      <header className="shrink-0 border-b border-rule-strong">
         <div className="flex items-baseline justify-between px-6 pt-4">
-          <h1 className="text-2xl">job-trackwsp</h1>
-          <div className="flex items-baseline gap-4 text-[11px] text-text-muted">
+          <h1 className="text-heading">job-trackwsp</h1>
+          <div className="flex items-baseline gap-4 text-meta text-text-muted">
             {load.kind === 'ready' && (
               <span>
                 {visible.length} / {jobs.length}
@@ -130,15 +184,17 @@ export default function App() {
 
         <FilterBar
           filters={filters}
-          cities={cities}
-          sources={sources}
-          onChange={setFilters}
+          onChange={changeFilters}
+          counts={counts}
+          view={view}
+          onView={changeView}
+          scale={scale}
           onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
           onExpandAll={() => setCollapsed(new Set())}
         />
 
         {notice && (
-          <div className="flex justify-between border-t border-rule px-6 py-1.5 text-[11px] text-text-muted">
+          <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
             <span>{notice}</span>
             <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
               [ dismiss ]
@@ -147,7 +203,7 @@ export default function App() {
         )}
       </header>
 
-      <main>
+      <main className="flex-1 overflow-y-auto">
         {load.kind === 'loading' && <Message>loading postings…</Message>}
 
         {load.kind === 'error' && (
@@ -168,7 +224,7 @@ export default function App() {
             nothing matches these filters.{' '}
             <button
               type="button"
-              onClick={() => setFilters(EMPTY_FILTERS)}
+              onClick={() => changeFilters(DEFAULT_FILTERS)}
               className="cursor-pointer text-text hover:underline"
             >
               [ clear ]
@@ -181,13 +237,25 @@ export default function App() {
             key={g.city}
             city={g.city}
             jobs={g.jobs}
+            view={view}
             collapsed={collapsed.has(g.city)}
             onToggle={toggleCity}
+            onSelect={(job) => setSelectedId(job.id)}
             onOpen={open}
-            onToggleApplied={toggleApplied}
           />
         ))}
       </main>
+
+      {selected && (
+        <JobDetail
+          job={selected}
+          undoable={recentlyApplied.has(selected.id)}
+          onClose={closeDetail}
+          onOpen={open}
+          onMarkApplied={markApplied}
+          onUndo={undo}
+        />
+      )}
     </div>
   )
 }

@@ -1,77 +1,79 @@
 import type { Filters } from '../types'
+import { VIEW_MODES, type ViewMode } from '../lib/view'
+import type { Scale } from '../lib/scale'
+import FilterChips from './FilterChips'
+import FilterMenu from './FilterMenu'
+import { field, textButton } from './styles'
 
 type Props = {
   filters: Filters
-  cities: string[]
-  sources: string[]
   onChange: (next: Filters) => void
+  // Per-row counts for the filter panel.
+  counts: Map<string, number>
+  view: ViewMode
+  onView: (v: ViewMode) => void
+  scale: Scale
   onCollapseAll: () => void
   onExpandAll: () => void
 }
 
-const field =
-  'border border-rule-strong bg-bg px-2 py-1 text-text outline-none placeholder:text-text-dim focus:border-text-muted'
-
-type ToggleKey = 'unappliedOnly' | 'closingOnly' | 'hideBorderline'
-
-const TOGGLES: { key: ToggleKey; label: string }[] = [
-  { key: 'unappliedOnly', label: 'unapplied only' },
-  { key: 'closingOnly', label: 'closing ≤ 7d' },
-  { key: 'hideBorderline', label: 'hide borderline' },
-]
-
-export default function FilterBar({ filters, cities, sources, onChange, onCollapseAll, onExpandAll }: Props) {
-  // Every control replaces one key and keeps the rest — `{ ...filters, x }`
-  // makes a new object, which is what tells React state changed.
-  const set = <K extends keyof Filters>(key: K, value: Filters[K]) => onChange({ ...filters, [key]: value })
-
+// The toolbar: search, city, [ filters ] + chips, then view modes and
+// collapse/expand on the right.
+export default function FilterBar({
+  filters,
+  onChange,
+  counts,
+  view,
+  onView,
+  scale,
+  onCollapseAll,
+  onExpandAll,
+}: Props) {
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 text-[11px]">
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 text-meta">
       <input
         type="search"
         value={filters.query}
-        onChange={(e) => set('query', e.target.value)}
+        onChange={(e) => onChange({ ...filters, query: e.target.value })}
         placeholder="search company / title"
+        aria-label="search company or title"
         className={`${field} w-56`}
       />
 
-      <select value={filters.city} onChange={(e) => set('city', e.target.value)} className={field}>
-        <option value="">any city</option>
-        {cities.map((c) => (
-          <option key={c} value={c}>
-            {c.toLowerCase()}
-          </option>
-        ))}
-      </select>
+      <input
+        type="search"
+        value={filters.city}
+        onChange={(e) => onChange({ ...filters, city: e.target.value })}
+        placeholder="city"
+        aria-label="city"
+        className={`${field} w-36`}
+      />
 
-      <select value={filters.source} onChange={(e) => set('source', e.target.value)} className={field}>
-        <option value="">any source</option>
-        {sources.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
-
-      {TOGGLES.map(({ key, label }) => (
-        <button
-          key={key}
-          type="button"
-          onClick={() => set(key, !filters[key])}
-          aria-pressed={filters[key]}
-          className={`cursor-pointer whitespace-nowrap hover:text-text ${filters[key] ? 'text-text' : 'text-text-muted'}`}
-        >
-          {filters[key] ? '[x]' : '[ ]'} {label}
-        </button>
-      ))}
+      <FilterMenu filters={filters} onChange={onChange} counts={counts} />
+      <FilterChips filters={filters} onChange={onChange} />
 
       {/* `ml-auto` on the first item of a flex row pushes it and everything
           after it to the right edge. */}
-      <span className="ml-auto flex gap-3 text-text-muted">
-        <button type="button" onClick={onCollapseAll} className="cursor-pointer hover:text-text" title="collapse all">
+      <span className="ml-auto flex items-center gap-3">
+        <span className="mr-2 text-text-dim" title="ui scale · ctrl +/- · ctrl 0 to reset">
+          {Math.round(scale * 100)}%
+        </span>
+        {VIEW_MODES.map(({ mode, glyph, label }) => (
+          <button
+            key={mode}
+            type="button"
+            onClick={() => onView(mode)}
+            aria-pressed={view === mode}
+            title={label}
+            className={`cursor-pointer text-body hover:text-text ${view === mode ? 'text-text' : 'text-text-dim'}`}
+          >
+            {glyph}
+          </button>
+        ))}
+        <button type="button" onClick={onCollapseAll} className={`${textButton} ml-2 text-text-muted`} title="collapse all">
           [ - ]
         </button>
-        <button type="button" onClick={onExpandAll} className="cursor-pointer hover:text-text" title="expand all">
+        <button type="button" onClick={onExpandAll} className={`${textButton} text-text-muted`} title="expand all">
           [ + ]
         </button>
       </span>

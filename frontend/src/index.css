@@ -20,11 +20,11 @@
   --bg-hover:   #18161c;  /* row/cell hover */
   --rule-strong:#2e2a36;  /* section bands */
 
-  /* status markers — 3px left edge on a row */
-  --status-closing:    #f2bdc9;  /* deadline within 7 days */
-  --status-borderline: #b8c8f0;  /* spans into summer / fall 2027 start / other */
-  --status-applied:    #b8dcc8;  /* applied */
-  --status-stale:      #c8c0a8;  /* not seen in the last few runs */
+  /* status colours — stripe, diamond and flag squares */
+  --status-green: #b8dcc8;  /* applied */
+  --status-pink:  #f2bdc9;  /* deadline within CLOSING_SOON_DAYS · stale square */
+  --status-blue:  #b8c8f0;  /* deadline further out · borderline square */
+  --status-sand:  #c8c0a8;  /* rolling / past due */
 }
 
 @theme {
@@ -36,13 +36,24 @@
   --color-text-dim:      var(--text-dim);
   --color-rule:          var(--rule);
   --color-rule-strong:   var(--rule-strong);
-  --color-closing:       var(--status-closing);
-  --color-borderline:    var(--status-borderline);
-  --color-applied:       var(--status-applied);
-  --color-stale:         var(--status-stale);
+  --color-green:         var(--status-green);
+  --color-pink:          var(--status-pink);
+  --color-blue:          var(--status-blue);
+  --color-sand:          var(--status-sand);
 
   --font-serif: "DM Serif Display", serif;
   --font-mono:  "Space Mono", monospace;
+
+  /* type scale. Tailwind turns each --text-* into a font-size utility
+     (`--text-meta` → `text-meta`). All rem, so the whole UI follows the
+     root font-size that the ctrl +/- scale sets on <html>; px values in
+     the comments are at 100%. */
+  --text-meta:         0.75rem;    /* 12px  labels, meta lines, bands, chips */
+  --text-sub:          0.875rem;   /* 14px  role titles under a company */
+  --text-body:         0.9375rem;  /* 15px  body default */
+  --text-company-line: 1.0625rem;  /* 17px  company in list view */
+  --text-company:      1.3125rem;  /* 21px  company on a card */
+  --text-heading:      1.75rem;    /* 28px  page title */
 }
 
 @layer base {
@@ -56,7 +67,7 @@
     background: var(--bg);
     color: var(--text);
     font-family: "Space Mono", monospace;
-    font-size: 0.8125rem;
+    font-size: var(--text-body);
     line-height: 1.7;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -89,30 +100,87 @@
   background: var(--bg-hover);
   border-top: 1px solid var(--rule-strong);
   border-bottom: 1px solid var(--rule-strong);
-  font-size: 10px;
+  font-size: var(--text-meta);
   letter-spacing: 0.12em;
   text-transform: uppercase;
   color: var(--text-muted);
   padding: 0.5rem 1.5rem;
 }
 
-/* one posting: dense row, 3px status edge, hairline underneath */
-.row {
-  display: grid;
-  align-items: baseline;
+/* one posting, in any view. Each card draws only its right and bottom
+   hairline, so neighbours share a single 1px line and the grid reads as one
+   table instead of separate boxes. Padding is left to each view. */
+.card {
+  position: relative;
+  border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
-  border-left: 3px solid transparent;
-  padding: 0.625rem 1.5rem;
   transition: background 0.12s ease;
 }
-.row:hover { background: var(--bg-hover); }
-.row[data-status="closing"]    { border-left-color: var(--status-closing); }
-.row[data-status="borderline"] { border-left-color: var(--status-borderline); }
-.row[data-status="applied"]    { border-left-color: var(--status-applied); opacity: 0.55; }
+.card:hover { background: var(--bg-hover); }
+
+/* 3px status stripe. A pseudo-element rather than border-left, because a
+   thick left border would push the card's content sideways and break the
+   shared-hairline grid. */
+.card::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 3px;
+  background: transparent;
+}
+.card[data-applied="true"] { opacity: 0.55; }
+
+/* status diamond: a 10px square turned 45deg, ~14px tip to tip (rem, so
+   it scales with the text). Drawn in CSS rather than with the ◆ character
+   because Space Mono has no ◆, and the fallback font's glyph varies in size
+   and baseline. A flag square is the same box, unrotated. */
+.marker,
+.flag {
+  display: inline-block;
+  width: 0.625rem;
+  height: 0.625rem;
+  flex-shrink: 0;
+}
+.marker { transform: rotate(45deg); }
+
+/* `data-color` → one variable, `--c`, on that element. Everything that
+   shows a status colour (stripe, diamond, square, label) then reads `--c`,
+   so each colour is mapped exactly once.
+
+   `::before` inherits custom properties from its element, which is how the
+   card's stripe sees the card's `--c`. The `[data-color]` in the selectors
+   below matters: custom properties inherit to children too, so an empty
+   flag slot (no data-color) inside a card would otherwise pick up the
+   card's colour and stop being empty. */
+[data-color="green"] { --c: var(--status-green); }
+[data-color="pink"]  { --c: var(--status-pink); }
+[data-color="blue"]  { --c: var(--status-blue); }
+[data-color="sand"]  { --c: var(--status-sand); }
+
+.card[data-color]::before,
+.marker[data-color],
+.flag[data-color] { background: var(--c); }
+
+/* status label in the meta line: text and 1px border in the status colour
+   over a ~10% tint of it. `color-mix` blends the colour with transparent,
+   which is a 10%-opacity version of it without a separate rgba token. The
+   tight line-height keeps the box from making the meta line taller than
+   the text around it. */
+.label {
+  display: inline-block;
+  padding: 0 0.3rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  color: var(--c);
+  border: 1px solid var(--c);
+  background: color-mix(in srgb, var(--c) 10%, transparent);
+}
 
 /* unbordered uppercase tag */
 .tag {
-  font-size: 11px;
+  font-size: var(--text-meta);
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--text-muted);

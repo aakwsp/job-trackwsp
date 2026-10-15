@@ -21,6 +21,7 @@ pub struct JobRow {
     pub borderline: bool,
     pub borderline_reason: Option<String>,
     pub source: Option<String>,
+    pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub applied: bool,
 }
@@ -64,18 +65,30 @@ impl From<sqlx::Error> for JobsError {
     }
 }
 
-/// Every non-hidden job, deadline ascending with nulls last, then most
-/// recently seen first. The frontend groups by city but keeps this order
-/// within each group.
+/// Every non-hidden job in three tiers: upcoming deadlines (soonest first),
+/// then no deadline (rolling), then past due (most recently expired first).
+/// Ties go to the most recently seen. The frontend groups by city but keeps
+/// this order within each group.
+///
+/// "Past due" uses the local date, matching the frontend's `daysLeft`.
 pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
     let rows = sqlx::query_as::<_, JobRow>(
         "SELECT j.id, j.company, j.title, j.city, j.req_id, j.url, j.deadline,
                 j.posting_status, j.borderline, j.borderline_reason, j.source,
-                j.last_seen,
+                j.first_seen, j.last_seen,
                 EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id) AS applied
          FROM jobs j
          WHERE j.hidden = 0
-         ORDER BY j.deadline IS NULL, j.deadline ASC, j.last_seen DESC",
+         ORDER BY
+           CASE
+             WHEN j.deadline IS NULL THEN 1
+             WHEN j.deadline < date('now', 'localtime') THEN 2
+             ELSE 0
+           END,
+           -- ascending for upcoming, descending for past due
+           CASE WHEN j.deadline >= date('now', 'localtime') THEN j.deadline END ASC,
+           CASE WHEN j.deadline < date('now', 'localtime') THEN j.deadline END DESC,
+           j.last_seen DESC",
     )
     .fetch_all(pool)
     .await?;
@@ -166,10 +179,12 @@ mod tests {
         tauri::async_runtime::block_on(async {
             for (key, deadline, last_seen, hidden) in [
                 ("a", None, "2026-10-01", 0),
-                ("b", Some("2026-10-20"), "2026-09-01", 0),
+                ("b", Some("2999-10-20"), "2026-09-01", 0),
                 ("c", None, "2026-10-05", 0),
-                ("d", Some("2026-10-10"), "2026-09-01", 0),
-                ("e", Some("2026-10-01"), "2026-09-01", 1),
+                ("d", Some("2999-10-10"), "2026-09-01", 0),
+                ("e", Some("2001-10-01"), "2026-09-01", 1),
+                ("f", Some("2001-01-01"), "2026-09-01", 0),
+                ("g", Some("2001-06-01"), "2026-09-01", 0),
             ] {
                 sqlx::query(
                     "INSERT INTO jobs (job_key, company, title, triple, deadline, last_seen, hidden)
@@ -192,7 +207,8 @@ mod tests {
                 .into_iter()
                 .map(|j| j.title)
                 .collect();
-            assert_eq!(titles, ["d", "b", "c", "a"]);
+            // upcoming asc, then rolling by last_seen, then past due desc; e hidden
+            assert_eq!(titles, ["d", "b", "c", "a", "g", "f"]);
 
             let id = list(&pool).await.unwrap()[0].id;
             set_applied(&pool, id, true).await.unwrap();
@@ -220,6 +236,37 @@ mod tests {
         });
 
         drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Applied state lives only in SQLite, so "survives a restart" means it
+    /// survives closing the pool and opening a fresh one on the same file.
+    #[test]
+    fn applied_survives_reopen() {
+        let dir = scratch_dir();
+        let id = tauri::async_runtime::block_on(async {
+            let pool = db::connect(&dir).await.unwrap();
+            sqlx::query(
+                "INSERT INTO jobs (job_key, company, title, triple) VALUES ('k', 'co', 't', 'k')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let id = list(&pool).await.unwrap()[0].id;
+            set_applied(&pool, id, true).await.unwrap();
+            pool.close().await;
+            id
+        });
+
+        let reopened = tauri::async_runtime::block_on(async {
+            let pool = db::connect(&dir).await.unwrap();
+            let jobs = list(&pool).await.unwrap();
+            pool.close().await;
+            jobs
+        });
+        assert_eq!(reopened[0].id, id);
+        assert!(reopened[0].applied);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

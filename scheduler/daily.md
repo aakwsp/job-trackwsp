@@ -96,10 +96,3 @@ Only include:
 3. One line with counts: inserted / updated / skipped.
 
 If nothing is new, say so in one line.
-
-Deadlines are frequently missed. Before recording a posting, check the actual
-posting page for a closing date — it is often in the body text ("applications
-close", "apply by", "deadline"), in a sidebar field, or only visible on the
-employer's own ATS page rather than on an aggregator. Record it as `deadline`.
-Only leave `deadline` empty when the posting itself states it is rolling or
-shows no date anywhere on the page.
