@@ -239,6 +239,46 @@ pub async fn remove_event(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i
     recompute_status(tx, id).await
 }
 
+/// Records a stage event that happened in the past (a rejection you heard
+/// about elsewhere, say), dated `occurred_at`, origin manual, and
+/// recomputes the status. Refuses a date before the application's latest
+/// event: the status is "the latest event", so such an event would land in
+/// the middle of the timeline and silently not change anything.
+// Only the one-off backfill runner calls this so far; a UI for dated
+// events can come with INBOX (JT-18).
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn record_event_at(
+    pool: &SqlitePool,
+    id: i64,
+    kind: &str,
+    occurred_at: &str,
+) -> Result<ApplicationRow, JobsError> {
+    let mut tx = pool.begin().await?;
+    let latest: Option<String> =
+        sqlx::query_scalar("SELECT MAX(occurred_at) FROM application_events WHERE application_id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if latest.as_deref().is_some_and(|l| l > occurred_at) {
+        return Err(JobsError::BadTransition(format!(
+            "{occurred_at} is before this application's latest event ({})",
+            latest.unwrap_or_default()
+        )));
+    }
+    sqlx::query(
+        "INSERT INTO application_events (application_id, type, occurred_at, origin)
+         VALUES (?, ?, ?, 'manual')",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(occurred_at)
+    .execute(&mut *tx)
+    .await?;
+    recompute_status(&mut tx, id).await?;
+    tx.commit().await?;
+    get(pool, id).await
+}
+
 /// One step back: removes the latest event and recomputes the status from
 /// what's left, in one transaction. Removing rather than writing a
 /// backwards event keeps the timeline truthful. This is both the record's
@@ -439,6 +479,68 @@ mod tests {
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_event_at_dates_it_and_refuses_the_past() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            let id = add(&pool, "AMD", "Graphics Intern", Some("2026-09-15")).await.unwrap().id;
+            let a = record_event_at(&pool, id, "rejected", "2026-09-21T12:00:00Z").await.unwrap();
+            assert_eq!(a.status, "rejected");
+            assert_eq!(a.events.last().unwrap().occurred_at, "2026-09-21T12:00:00Z");
+            assert_eq!(a.events.last().unwrap().origin, "manual");
+            // Before the latest event: refused, nothing written.
+            assert!(record_event_at(&pool, id, "interview", "2026-09-01T12:00:00Z").await.is_err());
+            assert_eq!(list(&pool).await.unwrap()[0].events.len(), 2);
+        });
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One-off backfill on the real database from a JSON plan (see the
+    /// JT-16 notes). Not run by default:
+    ///   JT_DB_DIR=... JT_PLAN=plan.json cargo test --lib applications::tests::apply_backfill_plan -- --ignored --nocapture
+    /// Plan: {"from_postings": [[job_id, applied_at]], "manual": [{company, title, applied_on, note}],
+    ///        "rejections": [{"job_id"|"manual_title", "at"}]}. Skips anything already done.
+    #[test]
+    #[ignore]
+    fn apply_backfill_plan() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let plan: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(std::env::var("JT_PLAN").expect("JT_PLAN")).unwrap()).unwrap();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            for item in plan["from_postings"].as_array().unwrap() {
+                let (job, at) = (item[0].as_i64().unwrap(), item[1].as_str().unwrap());
+                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM applications WHERE job_id = ?")
+                    .bind(job).fetch_one(&pool).await.unwrap();
+                if exists > 0 { println!("job {job}: already has an application, skipped"); continue; }
+                crate::jobs::set_applied_at(&pool, job, true, Some(at)).await.unwrap();
+                println!("job {job}: applied {at}");
+            }
+            for m in plan["manual"].as_array().unwrap() {
+                let (company, title) = (m["company"].as_str().unwrap(), m["title"].as_str().unwrap());
+                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM applications WHERE job_id IS NULL AND company = ? AND title = ?")
+                    .bind(company).bind(title).fetch_one(&pool).await.unwrap();
+                if exists > 0 { println!("{company} {title}: already exists, skipped"); continue; }
+                let a = add(&pool, company, title, m["applied_on"].as_str()).await.unwrap();
+                save_notes(&pool, a.id, m["note"].as_str().unwrap_or("")).await.unwrap();
+                println!("manual #{}: {company} — {title}, applied {:?}", a.id, a.applied_at);
+            }
+            for r in plan["rejections"].as_array().unwrap() {
+                let id: i64 = match (r.get("job_id"), r.get("manual_title")) {
+                    (Some(j), _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(j.as_i64().unwrap()).fetch_one(&pool).await.unwrap(),
+                    (_, Some(t)) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id IS NULL AND title = ?").bind(t.as_str().unwrap()).fetch_one(&pool).await.unwrap(),
+                    _ => panic!("rejection needs job_id or manual_title"),
+                };
+                let status: String = sqlx::query_scalar("SELECT status FROM applications WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
+                if status == "rejected" { println!("application {id}: already rejected, skipped"); continue; }
+                let a = record_event_at(&pool, id, "rejected", r["at"].as_str().unwrap()).await.unwrap();
+                println!("application {id}: {} at {}", a.status, a.events.last().unwrap().occurred_at);
+            }
+        });
     }
 
     #[test]

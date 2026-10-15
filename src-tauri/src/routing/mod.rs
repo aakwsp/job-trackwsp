@@ -44,7 +44,7 @@ use serde::Serialize;
 use sqlx::SqlitePool;
 
 use crate::mail::filter::sender_address;
-use normalize::{company_key, domain_company, req_key, role_similarity};
+use normalize::{company_key, domain_company, req_key, role_similarity, role_tokens};
 
 pub const AUTO_THRESHOLD: f64 = 0.80;
 /// A role match counts as "clear" (picks one of several applications at a
@@ -192,11 +192,8 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
     // 2. Narrow several candidates by role, if one clearly fits.
     let role_of = |a: &AppSnap| e.role.as_deref().map(|r| role_similarity(r, &a.title, &a.company)).unwrap_or(0.0);
     if candidates.len() > 1 {
-        let mut scored: Vec<(f64, &AppSnap)> = candidates.iter().map(|a| (role_of(a), *a)).collect();
-        scored.sort_by(|x, y| y.0.total_cmp(&x.0));
-        let (best, second) = (scored[0].0, scored[1].0);
-        if best >= ROLE_CLEAR && best - second >= ROLE_MARGIN {
-            candidates = vec![scored[0].1];
+        if let Some(one) = e.role.as_deref().and_then(|r| narrow_by_role(r, &candidates)) {
+            candidates = vec![one];
         }
     }
 
@@ -292,6 +289,49 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         route,
         note,
     }
+}
+
+/// Picks the one candidate a role clearly names, trying in order:
+/// 1. overall similarity: best ≥ `ROLE_CLEAR` and `ROLE_MARGIN` ahead;
+/// 2. the only exact title match (similarity 1);
+/// 3. distinctive words: each candidate's words that no other candidate's
+///    title has ("fullstack", "test", "machine learning"). The share of a
+///    candidate's distinctive words found in the email must be ≥ 0.5 and
+///    strictly ahead of every other candidate. Words all the titles share
+///    ("software engineer") say nothing here.
+///
+/// None when it stays ambiguous.
+fn narrow_by_role<'a>(role: &str, candidates: &[&'a AppSnap]) -> Option<&'a AppSnap> {
+    let sims: Vec<f64> = candidates.iter().map(|a| role_similarity(role, &a.title, &a.company)).collect();
+    let mut order: Vec<usize> = (0..candidates.len()).collect();
+    order.sort_by(|&x, &y| sims[y].total_cmp(&sims[x]));
+    let (best, second) = (sims[order[0]], sims[order[1]]);
+    if best >= ROLE_CLEAR && best - second >= ROLE_MARGIN {
+        return Some(candidates[order[0]]);
+    }
+    let exact: Vec<usize> = (0..candidates.len()).filter(|&i| sims[i] >= 1.0).collect();
+    if exact.len() == 1 {
+        return Some(candidates[exact[0]]);
+    }
+
+    let email = role_tokens(role, &candidates[0].company);
+    let titles: Vec<_> = candidates.iter().map(|a| role_tokens(&a.title, &a.company)).collect();
+    let distinct_share: Vec<f64> = titles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let own: Vec<&String> =
+                t.iter().filter(|w| titles.iter().enumerate().all(|(j, o)| j == i || !o.contains(*w))).collect();
+            if own.is_empty() {
+                0.0
+            } else {
+                own.iter().filter(|w| email.contains(**w)).count() as f64 / own.len() as f64
+            }
+        })
+        .collect();
+    let top = distinct_share.iter().cloned().fold(0.0, f64::max);
+    let leaders: Vec<usize> = (0..candidates.len()).filter(|&i| distinct_share[i] == top).collect();
+    (top >= 0.5 && leaders.len() == 1).then(|| candidates[leaders[0]])
 }
 
 /// What an event means for one application. The note, if any, forces
@@ -813,6 +853,38 @@ mod tests {
         assert_eq!(d.application_id, Some(3));
         assert!(d.reasons.iter().any(|r| r == "domain lyft.com"));
         assert_eq!(d.route, Route::Auto, "{:?}", d);
+    }
+
+    #[test]
+    fn distinctive_words_and_exact_titles_break_ties() {
+        // Real titles: generic words shared, "Summer" only in one of them.
+        let apps = vec![
+            app(1, "Lyft", "Software Engineer Intern, Backend (Summer 2027 - Toronto)", None, "applied", &[(10, "applied")]),
+            app(2, "Lyft", "Software Engineer Intern - Fullstack", None, "applied", &[(20, "applied")]),
+            app(3, "Lyft", "Software Engineer Intern - Machine Learning", None, "applied", &[(30, "applied")]),
+            app(4, "Lyft", "Data Engineer Intern", None, "applied", &[(40, "applied")]),
+        ];
+        for (role, want) in [
+            ("Software Engineer Intern, Fullstack (Summer 2027)", 2),
+            ("Software Engineer Intern, Machine Learning (Summer 2027)", 3),
+            ("Data Engineer Intern (Summer 2027)", 4),
+            ("Software Engineer Intern, Backend (Summer 2027)", 1),
+        ] {
+            let d = decide(&email(1, "applied", Some("Lyft"), Some(role), None, "x@us.greenhouse-mail.io"), &apps, &[], None);
+            assert_eq!(d.application_id, Some(want), "{role}");
+        }
+
+        let amd = vec![
+            app(5, "AMD", "Summer 2027 Long Term Software Test Engineering Intern/Co-Op", None, "applied", &[(50, "applied")]),
+            app(6, "AMD", "Summer 2027 Long Term Graphics Software Engineering Intern/Co-Op", None, "applied", &[(60, "applied")]),
+            app(7, "AMD", "Software Engineer Intern/Co-op", None, "applied", &[(70, "applied")]),
+            app(8, "AMD", "Graphics Software Engineer Intern/Co-op", None, "applied", &[(80, "applied")]),
+        ];
+        let pick = |role: &str| decide(&email(1, "applied", Some("AMD"), Some(role), None, "x@talent.icims.com"), &amd, &[], None).application_id;
+        assert_eq!(pick("Summer 2027 Long Term Software Test Engineering Intern/Co-Op"), Some(5));
+        assert_eq!(pick("Summer 2027 Long Term Graphics Software Engineering Intern/Co-Op"), Some(6));
+        // Nothing in the title says which "short term" posting: stays open.
+        assert_eq!(pick("Short Term 2027 Software Engineering Intern/Co-Op"), None);
     }
 
     #[test]

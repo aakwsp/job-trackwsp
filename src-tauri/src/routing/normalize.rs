@@ -120,7 +120,7 @@ const ROLE_STOPWORDS: &[&str] = &[
     "student", "program", "opportunities", "opportunity", "fy27", "fy26",
 ];
 
-fn role_tokens(role: &str, company: &str) -> HashSet<String> {
+pub fn role_tokens(role: &str, company: &str) -> HashSet<String> {
     // The company's own name, in both its written and its key form
     // ("royal bank of canada" and "rbc"): titles often repeat it.
     let key = company_key(company);
@@ -128,8 +128,17 @@ fn role_tokens(role: &str, company: &str) -> HashSet<String> {
     norm(role)
         .split(' ')
         .filter(|w| !w.is_empty() && !ROLE_STOPWORDS.contains(w) && !company_words.contains(*w))
-        .map(str::to_string)
+        .map(stem)
         .collect()
+}
+
+/// A very light stem so "Engineer" / "Engineering" and "Test" / "Testing"
+/// count as the same word: drop a trailing "ing" from longer words.
+fn stem(w: &str) -> String {
+    match w.strip_suffix("ing") {
+        Some(base) if base.len() >= 4 => base.to_string(),
+        _ => w.to_string(),
+    }
 }
 
 /// 0..1 overlap between two titles (Dice coefficient on their meaningful
@@ -188,6 +197,8 @@ mod tests {
         assert_eq!(dev, 1.0);
         assert!(data < 0.5, "{data}");
         assert_eq!(role_similarity("", "Developer", rbc), 0.0);
+        // Engineer / Engineering are the same word.
+        assert_eq!(role_similarity("Software Engineering Intern", "Software Engineer Intern", "AMD"), 1.0);
     }
 
     #[test]
