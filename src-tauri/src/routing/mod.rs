@@ -47,7 +47,13 @@ use sqlx::SqlitePool;
 use crate::mail::filter::sender_address;
 use normalize::{body_has_city, body_has_req, body_has_title, company_key, domain_company, req_key, role_similarity, role_tokens};
 
+/// Score needed to apply a stage change (write an event) automatically.
 pub const AUTO_THRESHOLD: f64 = 0.80;
+/// Score needed to auto-attach an email to an application without
+/// changing its stage, when there's exactly one candidate (not one picked
+/// by Gemini). Lower because nothing in PIPELINE changes: mostly ATS
+/// confirmations, which can't earn domain evidence.
+pub const ATTACH_THRESHOLD: f64 = 0.60;
 /// A role match counts as "clear" (picks one of several applications at a
 /// company) at this similarity, if it also leads the runner-up by `ROLE_MARGIN`.
 const ROLE_CLEAR: f64 = 0.6;
@@ -321,8 +327,8 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         Some(n)
     } else if e.event_type == "offer" {
         Some("offers are always checked".into())
-    } else if score < AUTO_THRESHOLD {
-        Some(format!("score {score:.2} below {AUTO_THRESHOLD:.2}"))
+    } else if score < threshold(&action, by_llm) {
+        Some(format!("score {score:.2} below {:.2}", threshold(&action, by_llm)))
     } else {
         None
     };
@@ -339,6 +345,16 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         action,
         route,
         note,
+    }
+}
+
+/// The bar for auto: attach-only actions with a real single candidate get
+/// the lower one; anything that writes an event, or rests on a Gemini
+/// pick, needs the full threshold.
+fn threshold(action: &Action, by_llm: bool) -> f64 {
+    match action {
+        Action::Attach | Action::AttachEvent(_) if !by_llm => ATTACH_THRESHOLD,
+        _ => AUTO_THRESHOLD,
     }
 }
 
@@ -1019,10 +1035,11 @@ mod tests {
         assert_eq!(d.application_id, Some(1));
         assert!(d.reasons.contains(&"req_id in body".to_string()));
 
-        // One candidate, ATS sender: the exact title in the body lifts it
-        // over the threshold (the Atlassian case).
+        // One candidate, ATS sender: the exact title in the body lifts a
+        // stage change over the 0.80 bar (the Atlassian evidence, with an
+        // interview email so it would write an event).
         let one = vec![app(15, "Atlassian", "Software Engineer Intern, 2027 Canada", None, "applied", &[(150, "applied")])];
-        let mut e = email(2, "applied", Some("Atlassian"), Some("Software Engineer Intern, 2027 Canada"), None, "a@talent.icims.com");
+        let mut e = email(2, "interview", Some("Atlassian"), Some("Software Engineer Intern, 2027 Canada"), None, "a@talent.icims.com");
         let before = decide(&e, &one, &[], None);
         e.body = Some("Thank you again for your interest in the Software Engineer Intern, 2027 Canada position.".into());
         let after = decide(&e, &one, &[], None);
@@ -1173,6 +1190,20 @@ mod tests {
     }
 
     #[test]
+    fn attach_only_has_a_lower_bar_than_stage_changes() {
+        // KPMG-like: one application, ATS sender, no req id. Attaching to
+        // the existing applied event: auto at ~0.65.
+        let apps = vec![app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")])];
+        let e = email(1, "applied", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com");
+        let d = decide(&e, &apps, &[], None);
+        assert!(d.score >= ATTACH_THRESHOLD && d.score < AUTO_THRESHOLD, "{}", d.score);
+        assert_eq!((d.action.clone(), d.route), (Action::AttachEvent(40), Route::Auto));
+        // The same evidence for a stage change (interview) stays checking.
+        let d = decide(&email(2, "interview", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com"), &apps, &[], None);
+        assert_eq!((d.action, d.route), (Action::WriteEvent("interview".into()), Route::Checking));
+    }
+
+    #[test]
     fn offers_always_go_to_checking() {
         let apps = vec![app(1, "Acme", "Backend Intern", Some("R-1001"), "interview", &[(1, "applied"), (2, "interview")])];
         let d = decide(&email(1, "offer", Some("Acme"), Some("Backend Intern"), Some("R-1001"), "x@acme.com"), &apps, &[], None);
@@ -1313,6 +1344,51 @@ mod tests {
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Switches routing live on the database in JT_DB_DIR and does the
+    /// first live run (Gemini picker from the keyring). Not run by default:
+    ///   JT_DB_DIR=... cargo test --lib routing::tests::go_live -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn go_live() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let pool = block_on(db::connect(&dir)).unwrap();
+        block_on(
+            sqlx::query("INSERT INTO settings (key, value) VALUES (?, '1') ON CONFLICT (key) DO UPDATE SET value = '1'")
+                .bind(LIVE_KEY)
+                .execute(&pool),
+        )
+        .unwrap();
+        let picker = crate::extract::get_key(&crate::gmail::store::KeyringStore).unwrap().map(|k| picker::GeminiPicker {
+            client: Box::new(crate::extract::gemini::GeminiHttp::new(k).unwrap()),
+            model: crate::extract::model(&pool).unwrap(),
+        });
+        let rows = run(&RoutingState::default(), &pool, false, picker.as_ref().map(|p| p as &dyn picker::Picker)).unwrap();
+        println!("{}", serde_json::to_string(&rows).unwrap());
+    }
+
+    /// Re-points one email to the right application, as INBOX will:
+    /// undo (if it was auto) then confirm against JT_APP. Not run by default:
+    ///   JT_DB_DIR=... JT_EMAIL=71 JT_APP=32 cargo test --lib routing::tests::repoint_email -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn repoint_email() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let email: i64 = std::env::var("JT_EMAIL").unwrap().parse().unwrap();
+        let app: i64 = std::env::var("JT_APP").unwrap().parse().unwrap();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        if email_status(&pool, email).unwrap() == "auto" {
+            undo(&pool, email).unwrap();
+        }
+        confirm(&pool, email, Some(app), None).unwrap();
+        let row: (String, Option<i64>, String) = block_on(
+            sqlx::query_as("SELECT e.status, m.application_id, m.action FROM emails e JOIN email_matches m ON m.email_id = e.id WHERE e.id = ?")
+                .bind(email)
+                .fetch_one(&pool),
+        )
+        .unwrap();
+        println!("email {email}: {row:?}");
     }
 
     /// Asks the Gemini picker directly about given emails on a DB copy and

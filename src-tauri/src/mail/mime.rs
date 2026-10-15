@@ -75,8 +75,10 @@ pub fn decode(msg: &Message) -> Decoded {
             .find(|h| h.name.eq_ignore_ascii_case(name))
             .map(|h| h.value.trim().to_string())
     };
+    // Some senders HTML-escape their plain-text part too ("Co-op &amp;
+    // Intern"), so entities are decoded there as well.
     let body = find_part(payload, "text/plain")
-        .map(part_text)
+        .map(|p| decode_entities(&part_text(p)))
         .filter(|t| !t.trim().is_empty())
         .or_else(|| find_part(payload, "text/html").map(|p| html_to_text(&part_text(p))))
         .unwrap_or_default();
@@ -183,7 +185,7 @@ fn remove_element(s: &str, tag: &str) -> String {
     out
 }
 
-fn decode_entities(s: &str) -> String {
+pub fn decode_entities(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(amp) = rest.find('&') {
@@ -286,6 +288,20 @@ mod tests {
             // Block elements come out as paragraphs, one blank line apart.
             "This week in tech\n\nRoles & internships – fall edition\n\nRead more…\n\nUnsubscribe"
         );
+    }
+
+    #[test]
+    fn plain_text_entities_are_decoded() {
+        let data = decode_base64url_test("Software Developer - Co-op &amp; Intern &lt;Summer&gt;");
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "id": "x", "payload": { "mimeType": "text/plain", "headers": [], "body": { "data": data } }
+        }))
+        .unwrap();
+        assert_eq!(decode(&msg).body_text, "Software Developer - Co-op & Intern <Summer>");
+    }
+
+    fn decode_base64url_test(s: &str) -> String {
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s)
     }
 
     #[test]

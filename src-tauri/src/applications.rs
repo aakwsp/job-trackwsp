@@ -239,6 +239,24 @@ pub async fn remove_event(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i
     recompute_status(tx, id).await
 }
 
+/// Unlinks an application from a posting it was wrongly attached to and
+/// gives it its own company and title (as an application added by hand).
+/// Its events, notes and dates stay as they are.
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn detach_from_posting(pool: &SqlitePool, id: i64, company: &str, title: &str) -> Result<ApplicationRow, JobsError> {
+    sqlx::query(
+        "UPDATE applications SET job_id = NULL, company = ?, title = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(company)
+    .bind(title)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    get(pool, id).await
+}
+
 /// Records a stage event that happened in the past (a rejection you heard
 /// about elsewhere, say), dated `occurred_at`, origin manual, and
 /// recomputes the status. Refuses a date before the application's latest
@@ -529,16 +547,43 @@ mod tests {
                 save_notes(&pool, a.id, m["note"].as_str().unwrap_or("")).await.unwrap();
                 println!("manual #{}: {company} — {title}, applied {:?}", a.id, a.applied_at);
             }
+            for d in plan["detach"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                let id = d["application_id"].as_i64().unwrap();
+                let job: Option<i64> = sqlx::query_scalar("SELECT job_id FROM applications WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
+                if job.is_none() { println!("application {id}: already detached, skipped"); continue; }
+                let a = detach_from_posting(&pool, id, d["company"].as_str().unwrap(), d["title"].as_str().unwrap()).await.unwrap();
+                let note = d["note"].as_str().unwrap_or("");
+                let notes = match a.notes.as_deref() { Some(n) if !n.is_empty() => format!("{n}\n{note}"), _ => note.to_string() };
+                save_notes(&pool, id, &notes).await.unwrap();
+                println!("application {id}: detached from job {}, now {} — {}", job.unwrap(), a.company, a.title);
+            }
             for r in plan["rejections"].as_array().unwrap() {
-                let id: i64 = match (r.get("job_id"), r.get("manual_title")) {
-                    (Some(j), _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(j.as_i64().unwrap()).fetch_one(&pool).await.unwrap(),
-                    (_, Some(t)) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id IS NULL AND title = ?").bind(t.as_str().unwrap()).fetch_one(&pool).await.unwrap(),
+                let id: i64 = match (r.get("job_id"), r.get("manual_title"), r.get("application_id")) {
+                    (_, _, Some(a)) => a.as_i64().unwrap(),
+                    (Some(j), _, _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(j.as_i64().unwrap()).fetch_one(&pool).await.unwrap(),
+                    (_, Some(t), _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id IS NULL AND title = ?").bind(t.as_str().unwrap()).fetch_one(&pool).await.unwrap(),
                     _ => panic!("rejection needs job_id or manual_title"),
                 };
                 let status: String = sqlx::query_scalar("SELECT status FROM applications WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
                 if status == "rejected" { println!("application {id}: already rejected, skipped"); continue; }
                 let a = record_event_at(&pool, id, "rejected", r["at"].as_str().unwrap()).await.unwrap();
                 println!("application {id}: {} at {}", a.status, a.events.last().unwrap().occurred_at);
+            }
+            if plan["redecode_bodies"].as_bool() == Some(true) {
+                // Plain-text bodies stored before entities were decoded
+                // there; only rows that still have a body and an entity.
+                let rows: Vec<(i64, String)> = sqlx::query_as(
+                    "SELECT id, body_text FROM emails WHERE body_text LIKE '%&%;%'",
+                ).fetch_all(&pool).await.unwrap();
+                let mut changed = 0;
+                for (id, body) in rows {
+                    let fixed = crate::mail::mime::decode_entities(&body);
+                    if fixed != body {
+                        sqlx::query("UPDATE emails SET body_text = ? WHERE id = ?").bind(fixed).bind(id).execute(&pool).await.unwrap();
+                        changed += 1;
+                    }
+                }
+                println!("bodies re-decoded: {changed}");
             }
         });
     }

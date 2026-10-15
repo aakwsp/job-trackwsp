@@ -121,15 +121,17 @@ insert a new row.
   (`routing/picker.rs`) asks which candidate, or none; a pick narrows and
   adds 0.10 in place of the single-candidate bonus, so it can never reach
   auto alone. Only `extracted` / `checking` mail is sent for this; answers
-  are cached in `llm_match_hints` per candidate set (not by dry runs). ≥ 0.80 with exactly one
-  match → `auto`; ambiguous, unmatched, offers, reopening a closed
+  are cached in `llm_match_hints` per candidate set (not by dry runs).
+  Auto needs exactly one match and ≥ 0.80 for anything that writes a stage
+  event, or ≥ 0.60 for attach-only actions with a real single candidate (not
+  one resting on a Gemini pick); ambiguous, unmatched, offers, reopening a closed
   application → `checking`. Auto never moves an application backwards, never
   duplicates a stage that's already recorded (it attaches to that event),
   never creates an application (a matching posting is only suggested), and
   writes stage events through `applications::write_email_event`, so undo
   removes exactly that event. Runs oldest → newest, after each extraction
   run and whenever applications change, **only once `settings.routing_live`
-  = '1'**; `routing::run(.., dry = true)` decides and simulates without
+  = '1'** (live since 2026-10-15); `routing::run(.., dry = true)` decides and simulates without
   writing. Emails the user undid / edited / rejected are never auto again.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
