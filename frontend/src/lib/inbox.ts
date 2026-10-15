@@ -26,17 +26,34 @@ export function eventLabel(type: string | null): string {
 /** Scores under this are shown pink. */
 export const LOW_SCORE = 0.8
 
-export type MailSort = 'newest' | 'company' | 'score'
+// INBOX's one view switch (JT-18): `newest` is the by-email list in its
+// // checking, // auto, // checked sections; `company` is the by-job
+// grouping, companies A–Z.
+export type MailSort = 'newest' | 'company'
 
-export function sortRows(rows: InboxRow[], sort: MailSort): InboxRow[] {
-  const a = [...rows]
-  const recv = (r: InboxRow) => r.received_at ?? ''
-  if (sort === 'company')
-    a.sort((x, y) => (x.company ?? '').localeCompare(y.company ?? '') || recv(y).localeCompare(recv(x)))
-  // Lowest score first: the ones most worth a look. Unscored at the end.
-  else if (sort === 'score') a.sort((x, y) => (x.score ?? 2) - (y.score ?? 2))
-  else a.sort((x, y) => recv(y).localeCompare(recv(x)))
-  return a
+/** Newest first. */
+export function sortRows(rows: InboxRow[]): InboxRow[] {
+  return [...rows].sort((x, y) => (y.received_at ?? '').localeCompare(x.received_at ?? ''))
+}
+
+// Remembered like the JOBS view mode (lib/view.ts): localStorage, and a
+// broken value never stops the page from rendering.
+const SORT_KEY = 'jt.inbox.sort'
+
+export function loadSort(): MailSort {
+  try {
+    return localStorage.getItem(SORT_KEY) === 'company' ? 'company' : 'newest'
+  } catch {
+    return 'newest'
+  }
+}
+
+export function saveSort(s: MailSort) {
+  try {
+    localStorage.setItem(SORT_KEY, s)
+  } catch {
+    // not saved; it still works for this session
+  }
 }
 
 /** 'YYYY-MM-DD' of a stored UTC timestamp, in local time. */

@@ -413,7 +413,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         <p className="mt-3.5 text-[0.71875rem] leading-[1.6] text-text-muted">{effect}</p>
       </div>
       <p className="px-8 pt-[1.625rem] pb-7 text-micro leading-[1.8] text-text-dim">
-        j/k next/prev · ←/→ along timeline · 1–9 match · c / enter confirm · e edit · x reject · m read/unread · g by email/by job · esc stop editing
+        j/k next/prev · ←/→ along timeline · 1–9 match · c / enter confirm · e edit · x reject · m read/unread · g newest/company · esc stop editing
       </p>
     </>
   )

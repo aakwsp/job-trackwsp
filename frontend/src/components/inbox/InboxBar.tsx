@@ -14,11 +14,8 @@ import {
 // INBOX's toolbar band (JT-18), laid out like the JOBS FilterBar and built
 // from the same pieces (`field`, `textButton`, `.band`, `.reveal`,
 // marker / flag shapes), without touching the JOBS components: left, the
-// boxed search and [ filters ] + chips; right, sort, the view modes, the
-// list fold and fold / unfold all sections.
-
-export type Mode = 'email' | 'job'
-export type JobSort = 'activity' | 'company'
+// boxed search and [ filters ] + chips; right, sort (which is also the
+// view), the list fold and fold / unfold all sections.
 
 type Props = {
   searchRef: RefObject<HTMLInputElement | null>
@@ -27,23 +24,13 @@ type Props = {
   filters: InboxFilters
   onFilters: (f: InboxFilters) => void
   counts: Map<InboxFilterKey, number>
-  mode: Mode
-  onMode: (m: Mode) => void
   sort: MailSort
   onSort: (s: MailSort) => void
-  jobSort: JobSort
-  onJobSort: (s: JobSort) => void
   narrow: boolean
   onNarrow: () => void
   onCollapseAll: () => void
   onExpandAll: () => void
 }
-
-// Glyphs where JOBS has its grid / compact / line icons.
-const MODES: { mode: Mode; glyph: string; label: string }[] = [
-  { mode: 'email', glyph: '≡', label: 'by email (g)' },
-  { mode: 'job', glyph: '⊟', label: 'by job (g)' },
-]
 
 // `searchRef` is taken out of `p` so the linter doesn't treat every
 // prop as a ref.
@@ -67,45 +54,22 @@ export default function InboxBar({ searchRef, ...p }: Props) {
         }}
         placeholder="search company / subject / body"
         aria-label="search company, role, subject, sender or body (/)"
-        className={`${field} w-56`}
+        className={`${field} w-80`}
       />
       <InboxFilterMenu filters={p.filters} onChange={p.onFilters} counts={p.counts} />
       <InboxFilterChips filters={p.filters} onChange={p.onFilters} />
 
       <span className="ml-auto flex items-center gap-3">
-        {/* Sort keeps INBOX's underline for the active one. */}
+        {/* Sort is the view switch (newest = by email, company = by
+            job); keeps INBOX's underline for the active one. */}
         <span className="flex items-center gap-1">
           <span className="pr-0.5 text-text-dim">sort</span>
-          {p.mode === 'email'
-            ? (['newest', 'company', 'score'] as MailSort[]).map((s) => (
-                <SortButton key={s} on={p.sort === s} onClick={() => p.onSort(s)}>
-                  {s}
-                </SortButton>
-              ))
-            : (
-                [
-                  ['activity', 'latest activity'],
-                  ['company', 'company'],
-                ] as [JobSort, string][]
-              ).map(([s, label]) => (
-                <SortButton key={s} on={p.jobSort === s} onClick={() => p.onJobSort(s)}>
-                  {label}
-                </SortButton>
-              ))}
+          {(['newest', 'company'] as MailSort[]).map((s) => (
+            <SortButton key={s} on={p.sort === s} onClick={() => p.onSort(s)}>
+              {s}
+            </SortButton>
+          ))}
         </span>
-        {MODES.map(({ mode, glyph, label }) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => p.onMode(mode)}
-            aria-pressed={p.mode === mode}
-            title={label}
-            aria-label={label}
-            className={`cursor-pointer text-body hover:text-text ${p.mode === mode ? 'text-text' : 'text-text-dim'}`}
-          >
-            {glyph}
-          </button>
-        ))}
         <button
           type="button"
           onClick={p.onNarrow}

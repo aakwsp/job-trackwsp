@@ -97,6 +97,9 @@ pub struct MailStatus {
     pub last_new: u32,
     /// Every stored email, whatever its status.
     pub total: u32,
+    /// Ignored or blocked (never in INBOX's lists): `total - ignored` is
+    /// what INBOX shows.
+    pub ignored: u32,
     /// A poll is running right now.
     pub checking: bool,
     /// Emails the LLM has read (JT-15).
@@ -120,6 +123,7 @@ pub fn status(mail: &MailState, pool: &SqlitePool) -> Result<MailStatus, MailErr
         checking: mail.running.load(Ordering::SeqCst),
         parsed: count(pool, "SELECT COUNT(*) FROM emails WHERE status = 'extracted'")?,
         waiting: count(pool, "SELECT COUNT(*) FROM emails WHERE status = 'pending'")?,
+        ignored: count(pool, "SELECT COUNT(*) FROM emails WHERE status IN ('ignored', 'blocked')")?,
         extracting: false,
         extract_error: None,
         needs_key: false,

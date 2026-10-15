@@ -3,10 +3,10 @@ import { useStuck } from '../../lib/useStuck'
 import { loadFolded, loadListCollapsed, saveFolded, saveListCollapsed, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
 import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
-import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
+import { LOW_SCORE, eventColor, eventLabel, loadSort, localDay, saveSort, sortRows, type MailSort } from '../../lib/inbox'
 import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
-import InboxBar, { type JobSort, type Mode } from './InboxBar'
+import InboxBar from './InboxBar'
 import { useReveal } from '../../lib/reveal'
 import { inboxFilterCounts, loadInboxFilters, matchesInboxFilters, saveInboxFilters, type InboxFilters } from '../../lib/inboxFilters'
 
@@ -26,8 +26,14 @@ type Props = {
 
 
 export default function Inbox({ inbox, top, connected }: Props) {
-  // `g` toggles by email / by job.
-  const [mode, setMode] = useState<Mode>('email')
+  // Sort is the view: newest = by email in sections, company = by job.
+  // `g` flips it. Remembered like the JOBS view mode.
+  const [sort, setSortState] = useState<MailSort>(loadSort)
+  function setSort(s: MailSort) {
+    setSortState(s)
+    saveSort(s)
+  }
+  const mode = sort === 'company' ? 'job' : 'email'
   // The search line is always there: `/` jumps into it, esc clears it and
   // leaves it.
   const searchRef = useRef<HTMLInputElement>(null)
@@ -40,9 +46,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
       return !n
     })
   }
-  const [jobSort, setJobSort] = useState<JobSort>('activity')
   const [jobId, setJobId] = useState<number | null>(null)
-  const [sort, setSort] = useState<MailSort>('newest')
   const [showIgnored, setShowIgnored] = useState(false)
   // [ filters ] (include / exclude per section and unread), kept like
   // the JOBS filters.
@@ -74,11 +78,11 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // for Gemini or routing), // auto (applied automatically, untouched),
   // // checked (you confirmed or rejected it). The sort applies inside each.
   const checking = useMemo(
-    () => sortRows(rows.filter((r) => r.status === 'checking' || r.status === 'pending' || r.status === 'extracted'), sort),
-    [rows, sort],
+    () => sortRows(rows.filter((r) => r.status === 'checking' || r.status === 'pending' || r.status === 'extracted')),
+    [rows],
   )
-  const autoRows = useMemo(() => sortRows(rows.filter((r) => r.status === 'auto'), sort), [rows, sort])
-  const checked = useMemo(() => sortRows(rows.filter((r) => r.status === 'confirmed' || r.status === 'rejected'), sort), [rows, sort])
+  const autoRows = useMemo(() => sortRows(rows.filter((r) => r.status === 'auto')), [rows])
+  const checked = useMemo(() => sortRows(rows.filter((r) => r.status === 'confirmed' || r.status === 'rejected')), [rows])
   const all = useMemo(() => [...autoRows, ...checked], [autoRows, checked])
 
   // Something is always open, like the board: the first checking email,
@@ -170,7 +174,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
       } else if (e.key === 'm' && r) {
         inbox.act(() => api.inboxSetRead(r.id, !r.read))
       } else if (e.key === 'g') {
-        setMode((m) => (m === 'email' ? 'job' : 'email'))
+        setSort(md === 'email' ? 'company' : 'newest')
       } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && timeline.length > 0) {
         const i = timeline.findIndex((n) => n.email_id === id)
         const next = timeline[i + (e.key === 'ArrowRight' ? 1 : -1)]
@@ -198,12 +202,8 @@ export default function Inbox({ inbox, top, connected }: Props) {
           filters={filters}
           onFilters={changeFilters}
           counts={filterCounts}
-          mode={mode}
-          onMode={setMode}
           sort={sort}
           onSort={setSort}
-          jobSort={jobSort}
-          onJobSort={setJobSort}
           narrow={narrow}
           onNarrow={toggleNarrow}
           onCollapseAll={() => foldAll(true)}
@@ -221,11 +221,11 @@ export default function Inbox({ inbox, top, connected }: Props) {
     >
       <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
         {mode === 'job' ? (
-          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} stickAt={barH} />
+          <JobList jobs={inbox.jobs ?? []} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} stickAt={barH} />
         ) : (
           <>
         {checking.length > 0 ? (
-          <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold} narrow={narrow}>
+          <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold}>
             <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
         ) : (
@@ -234,7 +234,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
           !inbox.searched && (
             // The InboxEmpty board: the section stays, saying so.
             <>
-              <Section name="checking" count={0} folded={false} onToggle={() => {}} narrow={narrow} />
+              <Section name="checking" count={0} folded={false} onToggle={() => {}} />
               <div className="border-b border-rule pt-[1.375rem] pr-5 pb-6 pl-6">
                 <p className="font-serif text-[1.375rem] leading-[1.1] text-text-dim">nothing to check.</p>
                 <p className="mt-2 text-[0.65625rem] text-text-dim">low-confidence mail lands here for a manual look.</p>
@@ -248,7 +248,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
             count={autoRows.length}
             folded={folded.has('auto')}
             onToggle={toggleFold}
-            narrow={narrow}
           >
             <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
@@ -259,7 +258,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
             count={checked.length}
             folded={folded.has('checked')}
             onToggle={toggleFold}
-            narrow={narrow}
           >
             <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
@@ -309,7 +307,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
 // as on the InboxByJob board.
 function JobList({
   jobs,
-  sort,
   currentId,
   onOpen,
   query,
@@ -317,7 +314,6 @@ function JobList({
   stickAt,
 }: {
   jobs: InboxJob[]
-  sort: JobSort
   currentId: number | null
   onOpen: (applicationId: number) => void
   query: string
@@ -327,8 +323,9 @@ function JobList({
 }) {
   const companies = new Map<string, InboxJob[]>()
   for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
-  const latest = (js: InboxJob[]) => js.map((j) => j.latest ?? '').sort().slice(-1)[0] ?? ''
-  const groups = [...companies].sort(([a, x], [b, y]) => (sort === 'company' ? a.localeCompare(b) : latest(y).localeCompare(latest(x))))
+  // Companies A–Z; jobs inside a company keep their order (latest
+  // activity first, as Rust returns them).
+  const groups = [...companies].sort(([a], [b]) => a.localeCompare(b))
   if (groups.length === 0)
     return (
       <p className="px-6 py-6 text-meta text-text-dim">
@@ -390,14 +387,12 @@ function Section({
   count,
   folded,
   onToggle,
-  narrow = false,
   children,
 }: {
   name: FoldKey
   count: number
   folded: boolean
   onToggle: (s: FoldKey) => void
-  narrow?: boolean
   children?: ReactNode
 }) {
   const { ref, className: revealClass } = useReveal(`inbox-band:${name}`)
@@ -411,9 +406,7 @@ function Section({
         className={`band rise ${revealClass} sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text`}
       >
         <span>
-          {/* Narrow list: the same header without the "// ". */}
-          {folded ? '+ ' : '- '}
-          {narrow ? name : `// ${name}`}
+          {folded ? '+ ' : '- '}// {name}
         </span>
         <span className="text-text-dim">{count}</span>
       </button>
@@ -543,8 +536,8 @@ function Row({ row, current, onOpen, query }: { row: InboxRow; current: boolean;
   )
 }
 
-// A row of the collapsed list: the unread dot and the company cut to ten
-// characters, then the stage colour (a diamond, as on the timeline) where
+// A row of the collapsed list: the company cut to ten characters (bright
+// = unread, muted = read), then the stage colour (a diamond, as on the timeline) where
 // the subject was. Same paddings and line boxes as `Row`, so folding the
 // list never moves a row.
 function NarrowRow({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen: (id: number) => void }) {
@@ -563,15 +556,15 @@ function NarrowRow({ row, current, onOpen }: { row: InboxRow; current: boolean; 
         current ? 'bg-bg-active outline outline-text -outline-offset-1' : 'bg-transparent hover:bg-bg-active'
       }`}
     >
-      <span className="flex items-center gap-2.5">
-        <span aria-hidden className={`size-[0.3125rem] shrink-0 ${unread ? 'bg-text' : 'bg-transparent'}`} />
+      {/* No unread dot here: bright vs muted name already says it. */}
+      <span className="flex items-center">
         <span className={`font-serif text-[1.1875rem] leading-[1.05] whitespace-nowrap lowercase ${unread ? 'text-text' : 'text-text-muted'}`}>
           {cut(row.company ?? '—')}
         </span>
       </span>
       {/* Same text size as Row's subject line, so the line box (and the
           row) is the same height; the diamond sits in it. */}
-      <span aria-hidden className="mt-[0.4375rem] flex items-center pl-[0.9375rem] text-[0.6875rem]">
+      <span aria-hidden className="mt-[0.4375rem] flex items-center text-[0.6875rem]">
         <span
           data-color={color ?? undefined}
           className={`block size-1.5 rotate-45 ${color ? 'bg-(--c)' : dim ? 'bg-text-dim' : 'bg-text-muted'}`}

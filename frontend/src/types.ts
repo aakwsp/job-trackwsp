@@ -93,6 +93,7 @@ export type MailStatus = {
   last_checked_at: string | null // full ISO timestamp, UTC; null before the first poll
   last_new: number // messages from that poll that passed the filter
   total: number // every stored email, whatever its status
+  ignored: number // ignored or blocked: never in INBOX's lists
   checking: boolean // a poll is running now
   parsed: number // emails the LLM has read (JT-15)
   waiting: number // pending emails waiting for the LLM
