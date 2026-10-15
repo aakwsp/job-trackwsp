@@ -14,7 +14,6 @@ import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
 import { PAGES, type Page } from './lib/page'
-import { withTransition } from './lib/motion'
 
 // One value instead of separate `loading` / `jobs` / `error` so impossible
 // combinations (loading *and* errored) can't happen. `kind` is the tag
@@ -102,7 +101,7 @@ export default function App() {
   function switchPage(p: Page) {
     if (p === page) return
     if (mainRef.current) scrollByPage.current[page] = mainRef.current.scrollTop
-    withTransition(() => setPage(p))
+    setPage(p)
   }
 
   function viewPipeline() {
@@ -117,9 +116,8 @@ export default function App() {
     saveFilters(next)
   }
 
-  // DEFAULT / COMPACT / LINE crossfade rather than snap (see lib/motion).
   function changeView(v: ViewMode) {
-    withTransition(() => setView(v))
+    setView(v)
     saveView(v)
   }
 
@@ -219,104 +217,112 @@ export default function App() {
         // properties.
         style={{ '--toolbar-h': `${toolbarH}px` } as CSSProperties}
       >
-        {/* `key={page}` gives each view a fresh Hero (and its scroll
-            observer) instead of reusing the last view's. */}
-        <Hero
-          key={page}
-          title={current.title}
-          subtitle={current.subtitle}
-          aside={
-            page === 'jobs' && (
-              <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
-                {load.kind === 'ready' && (
-                  <span>
-                    {visible.length} / {jobs.length}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  onClick={sync}
-                  disabled={syncing}
-                  className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
-                >
-                  {syncing ? '[ syncing… ]' : '[ sync ]'}
-                </button>
-              </div>
-            )
-          }
-        />
-
-        {page === 'jobs' ? (
-          <>
-            {/* `z-20` keeps the toolbar (and the filter panel that drops out
-                of it) above the city bands, which are `z-10`. */}
-            <div ref={toolbarRef} className="sticky top-0 z-20 border-t border-rule-strong bg-bg">
-              <FilterBar
-                filters={filters}
-                onChange={changeFilters}
-                counts={counts}
-                view={view}
-                onView={changeView}
-                scale={scale}
-                onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
-                onExpandAll={() => setCollapsed(new Set())}
-              />
-              {notice && (
-                <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
-                  <span>{notice}</span>
-                  <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
-                    [ dismiss ]
+        {/* One container per page. `key={page}` makes React mount a new one
+            on every switch, which replays its `.fade-in` animation (CSS
+            animations run when an element first appears) and gives each
+            view a fresh Hero and scroll observer. */}
+        <div key={page} className="fade-in flex flex-1 flex-col">
+          <Hero
+            title={current.title}
+            subtitle={current.subtitle}
+            aside={
+              page === 'jobs' && (
+                <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
+                  {load.kind === 'ready' && (
+                    <span>
+                      {visible.length} / {jobs.length}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={sync}
+                    disabled={syncing}
+                    className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
+                  >
+                    {syncing ? '[ syncing… ]' : '[ sync ]'}
                   </button>
                 </div>
+              )
+            }
+          />
+
+          {page === 'jobs' ? (
+            <>
+              {/* `z-20` keeps the toolbar (and the filter panel that drops out
+                  of it) above the city bands, which are `z-10`. */}
+              <div ref={toolbarRef} className="sticky top-0 z-20 border-t border-rule-strong bg-bg">
+                <FilterBar
+                  filters={filters}
+                  onChange={changeFilters}
+                  counts={counts}
+                  view={view}
+                  onView={changeView}
+                  scale={scale}
+                  onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
+                  onExpandAll={() => setCollapsed(new Set())}
+                />
+                {notice && (
+                  <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
+                    <span>{notice}</span>
+                    <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
+                      [ dismiss ]
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {load.kind === 'loading' && <Message>loading postings…</Message>}
+
+              {load.kind === 'error' && (
+                <Message>
+                  could not load postings: {load.message}{' '}
+                  <button type="button" onClick={retry} className="cursor-pointer text-text hover:underline">
+                    [ retry ]
+                  </button>
+                </Message>
               )}
-            </div>
 
-            {load.kind === 'loading' && <Message>loading postings…</Message>}
+              {load.kind === 'ready' && jobs.length === 0 && (
+                <Message>no postings yet — run a sync to pull the inbox.</Message>
+              )}
 
-            {load.kind === 'error' && (
-              <Message>
-                could not load postings: {load.message}{' '}
-                <button type="button" onClick={retry} className="cursor-pointer text-text hover:underline">
-                  [ retry ]
-                </button>
-              </Message>
-            )}
+              {load.kind === 'ready' && jobs.length > 0 && visible.length === 0 && (
+                <Message>
+                  nothing matches these filters.{' '}
+                  <button
+                    type="button"
+                    onClick={() => changeFilters(DEFAULT_FILTERS)}
+                    className="cursor-pointer text-text hover:underline"
+                  >
+                    [ clear ]
+                  </button>
+                </Message>
+              )}
 
-            {load.kind === 'ready' && jobs.length === 0 && (
-              <Message>no postings yet — run a sync to pull the inbox.</Message>
-            )}
+              {/* Same trick for DEFAULT / COMPACT / LINE: switching swaps the
+                  list instantly and fades in this one container, rather than
+                  animating ~330 cards. */}
+              <div key={view} className="fade-in">
+                {groups.map((g) => (
+                  <CityGroup
+                    key={g.city}
+                    city={g.city}
+                    jobs={g.jobs}
+                    view={view}
+                    collapsed={collapsed.has(g.city)}
+                    onToggle={toggleCity}
+                    onSelect={(job) => setSelectedId(job.id)}
+                    onOpen={open}
+                  />
+                ))}
+              </div>
+            </>
+          ) : (
+            <Placeholder what={current.title} />
+          )}
 
-            {load.kind === 'ready' && jobs.length > 0 && visible.length === 0 && (
-              <Message>
-                nothing matches these filters.{' '}
-                <button
-                  type="button"
-                  onClick={() => changeFilters(DEFAULT_FILTERS)}
-                  className="cursor-pointer text-text hover:underline"
-                >
-                  [ clear ]
-                </button>
-              </Message>
-            )}
-
-            {groups.map((g) => (
-              <CityGroup
-                key={g.city}
-                city={g.city}
-                jobs={g.jobs}
-                view={view}
-                collapsed={collapsed.has(g.city)}
-                onToggle={toggleCity}
-                onSelect={(job) => setSelectedId(job.id)}
-                onOpen={open}
-              />
-            ))}
-          </>
-        ) : (
-          <Placeholder what={current.title} />
-        )}
-
-        <AppFooter />
+          <AppFooter />
+        </div>
       </main>
 
       {selected && (

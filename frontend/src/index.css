@@ -312,12 +312,15 @@
 }
 .drawer-backdrop[data-closing="true"] { opacity: 0; }
 
-/* Crossfade for view-mode and page switches (lib/motion.ts). The browser
-   draws the old and new page as two snapshots and these set how they fade. */
-::view-transition-old(root),
-::view-transition-new(root) {
-  animation-duration: var(--motion);
-  animation-timing-function: var(--ease);
+/* View-mode and page switches: the new content swaps in instantly and this
+   one container fades in (App keys it, so it remounts and replays this).
+   Deliberately not the View Transitions API, which crashes WebKitGTK here
+   (see lib/motion.ts). */
+.fade-in {
+  animation: fade-in var(--motion) var(--ease);
+}
+@keyframes fade-in {
+  from { opacity: 0; }
 }
 
 /* Reduced motion: everything above simply happens instantly. */
@@ -325,10 +328,6 @@
   *, *::before, *::after {
     transition-duration: 0s !important;
     transition-delay: 0s !important;
-  }
-  ::view-transition-group(*),
-  ::view-transition-old(*),
-  ::view-transition-new(*) {
     animation: none !important;
   }
 }
