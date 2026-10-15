@@ -25,6 +25,8 @@ export default function JobCard({ job, compact, onSelect, onOpen }: Props) {
     // (which stretch to equal height) line their meta lines up.
     <article
       {...clickable(() => onSelect(job))}
+      // Lets App's hover shortcuts (a / o) find this posting.
+      data-job-id={job.id}
       ref={revealRef}
       className={`card rise ${revealClass} flex cursor-pointer flex-col pr-5 pl-6 ${compact ? 'pt-3.5 pb-3' : 'pt-5 pb-4'}`}
       data-color={stripeColor(job)}

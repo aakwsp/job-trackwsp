@@ -36,6 +36,10 @@ type LoadState =
 // colour (null).
 const STRIPE_COLORS = { applied: 'sand', assessment: 'blue', interview: 'pink', offer: 'green', closed: null } as const
 
+// The bottom confirmation line after a hover shortcut.
+type Toast = { id: number; text: string; onUndo?: () => void }
+const TOAST_MS = 5000
+
 type OpenRecord = { jobId: number | null; appId: number | null; from: RecordFrom; tab: Tab }
 
 export default function App() {
@@ -55,6 +59,14 @@ export default function App() {
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
   const [record, setRecord] = useState<OpenRecord | null>(null)
+  // The confirmation line at the bottom after a hover shortcut. A new
+  // object per toast, so the timer effect below restarts for each one.
+  const [toast, setToastState] = useState<Toast | null>(null)
+  // Stamps each toast with a fresh id, so two in a row with the same text
+  // still count as different (new timer, replayed fade).
+  const toastSeq = useRef(0)
+  const setToast = (t: Omit<Toast, 'id'> | null) =>
+    setToastState(t && { ...t, id: ++toastSeq.current })
   const [page, setPage] = useState<Page>('jobs')
 
   // <main> is the one scrolling element; every view scrolls inside it.
@@ -133,6 +145,59 @@ export default function App() {
     setFilters(next)
     saveFilters(next)
   }
+
+  // Each toast disappears after TOAST_MS. A newer one replaces it (and its
+  // timer) before then.
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), TOAST_MS)
+    return () => clearTimeout(t)
+  }, [toast])
+
+  // Hover shortcuts on list items: "a" marks the posting under the mouse
+  // applied, "o" opens it. Items carry `data-job-id` / `data-app-id`, so
+  // instead of tracking hover in state, the handler asks the DOM which item
+  // is hovered right now (`:hover`), falling back to the one with keyboard
+  // focus. No dependency list, for the same reason as Record's handler: it
+  // always sees the current jobs and functions.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      // An open record has its own keys, and they win.
+      if (record) return
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
+      // Typing in search, city, notes or the add form: letters are text.
+      if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
+      if (e.key !== 'a' && e.key !== 'o') return
+
+      const sel = '[data-job-id], [data-app-id]'
+      const el =
+        document.querySelector<HTMLElement>('[data-job-id]:hover, [data-app-id]:hover') ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>(sel) : null)
+      if (!el) return
+      // `dataset` is the element's data-* attributes, camelCased.
+      const app = el.dataset.appId ? apps.find((a) => a.id === Number(el.dataset.appId)) : undefined
+      const jobId = el.dataset.jobId ? Number(el.dataset.jobId) : app?.job_id
+      const job = jobs.find((j) => j.id === jobId)
+
+      if (e.key === 'o') {
+        if (job?.url) open(job)
+        else setToast({ text: 'no posting link' })
+      } else if (job && !job.applied) {
+        markApplied(job)
+        // A stray "a" is easy to press, so say what happened and offer the
+        // way back for a few seconds.
+        setToast({
+          text: `applied · ${job.company.toLowerCase()}`,
+          onUndo: () => unapply({ ...job, applied: true, app_status: 'applied' }),
+        })
+      } else if (job || app) {
+        setToast({ text: `already applied · ${(job?.company ?? app?.company ?? '').toLowerCase()}` })
+      } else return
+      e.preventDefault()
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  })
 
   // useCallback: Record's close-timer effect depends on `onClose`, so it
   // must stay the same function across App re-renders, or the 400ms safety
@@ -468,6 +533,34 @@ export default function App() {
           onUndoEvent={(app) => move(api.undoEvent, app)}
           onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
         />
+      )}
+
+      {toast && (
+        // `role="status"`: screen readers announce the text when it
+        // appears, without moving focus. `key` replays the fade for each
+        // new toast.
+        <div
+          key={toast.id}
+          role="status"
+          className="fade-in fixed inset-x-0 bottom-0 z-50 flex items-center gap-3 border-t border-rule-strong bg-bg px-6 py-2 text-meta text-text-muted"
+        >
+          <span className="text-text">{toast.text}</span>
+          {toast.onUndo && (
+            <>
+              <span className="text-text-dim">—</span>
+              <button
+                type="button"
+                onClick={() => {
+                  toast.onUndo?.()
+                  setToast(null)
+                }}
+                className="cursor-pointer hover:text-text"
+              >
+                [ undo ]
+              </button>
+            </>
+          )}
+        </div>
       )}
     </div>
   )

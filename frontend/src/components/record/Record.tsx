@@ -3,7 +3,7 @@ import type { Application, Job, StatusColor } from '../../types'
 import { activeFlags, labelsFor, statusInfo } from '../../lib/jobs'
 import { nextStage, stageColor } from '../../lib/applications'
 import { prefersReducedMotion } from '../../lib/motion'
-import { TABS, type RecordFrom, type Tab } from '../../lib/record'
+import { TABS, tabForKey, type RecordFrom, type Tab } from '../../lib/record'
 import { DRAWER_PAD, ExpandIcon, Tags, ghostButton, type TagSpec } from './parts'
 import { ApplicationSection, EmailsSection, PostingSection, SummarySection, type RecordModel } from './sections'
 
@@ -143,8 +143,8 @@ export default function Record({
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       // While typing a note, letters are text, not shortcuts.
       if (e.target instanceof Element && e.target.closest('textarea, input')) return
-      const n = Number(e.key)
-      if (n >= 1 && n <= TABS.length) setTab(TABS[n - 1])
+      const keyTab = tabForKey(e.key)
+      if (keyTab) setTab(keyTab)
       else if (e.key === 'o' && job?.url) onOpen(job)
       else if (e.key === 'a' && job && !app) onMarkApplied(job)
       else if (e.key === 'n' && app && next) onAdvance(app)
@@ -182,7 +182,7 @@ export default function Record({
       ]
 
   const keys = [
-    `1–${TABS.length} tabs`,
+    `0–${TABS.length - 1} tabs`,
     job?.url && 'o open posting',
     job && !app && 'a mark applied',
     next && 'n next stage',
@@ -289,11 +289,12 @@ export default function Record({
   // tab's own `px-3` makes up the difference).
   const tabBar = (pl: string) => (
     <div role="tablist" aria-label="record sections" className={`mt-5 flex flex-wrap border-b border-rule pr-5 ${pl}`}>
-      {TABS.map((t) => (
+      {TABS.map((t, i) => (
         <button
           key={t}
           type="button"
           role="tab"
+          aria-keyshortcuts={String(i)}
           aria-selected={tab === t}
           onClick={() => setTab(t)}
           // `-mb-px` pulls the button's 1px underline down over the bar's
@@ -302,7 +303,7 @@ export default function Record({
             tab === t ? 'border-text text-text' : 'border-transparent text-text-muted'
           }`}
         >
-          {t}
+          {t} <span className="text-text-dim">· {i}</span>
         </button>
       ))}
     </div>

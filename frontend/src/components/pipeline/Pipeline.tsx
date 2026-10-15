@@ -212,6 +212,8 @@ function Entry({
     // focus anywhere inside, so Tab can reach the button too.
     <div
       {...clickable(() => onSelect(app))}
+      // Lets App's hover shortcut (o) find this application.
+      data-app-id={app.id}
       ref={revealRef}
       data-color={stage.color}
       className={`group rise ${revealClass} relative cursor-pointer border-b border-rule pt-4 pr-4 pb-3.5 pl-6 transition-colors duration-(--motion) hover:bg-bg-hover focus-within:bg-bg-hover ${
@@ -288,6 +290,7 @@ function ClosedBand({
               <div
                 key={a.id}
                 {...clickable(() => onSelect(a))}
+                data-app-id={a.id}
                 className={`cursor-pointer border-r border-b border-rule py-3.5 pr-4 pl-6 hover:bg-bg-hover ${
                   a.id === selectedId ? 'outline outline-text -outline-offset-1' : ''
                 }`}
