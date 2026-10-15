@@ -27,17 +27,17 @@ type Props = {
   short?: boolean
 }
 
-// city · date-or-rolling · [square labels] [diamond label]
+// city · date-or-rolling  [square labels] [diamond label]
 // Used by the card views and the detail card. LINE lays the same pieces out
 // in columns instead (see JobLine).
 export default function MetaLine({ job, short = false }: Props) {
   return (
-    // `inline-flex` + `flex-wrap`: the pieces sit on one line like text, and
-    // the labels move to a second line rather than overflowing when a
-    // narrow card runs out of room.
+    // `flex-wrap`: the labels follow the date on the same line, and any that
+    // don't fit drop to a line beneath (left-aligned) instead of being cut.
+    // Each label is its own flex item, so they wrap one at a time.
     <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
       <span>
-        {job.city?.toLowerCase() ?? '—'} · {dateText(job)} ·
+        {job.city?.toLowerCase() ?? '—'} · {dateText(job)}
       </span>
       <Labels job={job} short={short} />
     </span>

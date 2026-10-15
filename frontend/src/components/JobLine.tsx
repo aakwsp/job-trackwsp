@@ -29,23 +29,25 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
           {clipTitle(job.title, LINE_TITLE_MAX)}
         </span>
       </p>
-      {/* Three fixed-width, right-aligned columns, so every row's city,
-          date and labels start at the same x and the dates line up no
-          matter how many labels a row has. Widths are in `ch` (the width of
-          one character): Space Mono is monospaced, so a `ch` is exact, and
-          it scales with the text.
+      {/* Meta columns anchored on the dot:
+            [city, right-aligned] · [date, left-aligned] [labels, left-aligned]
+          Every column has a fixed width, so the dot, the start of the date
+          and the start of the labels sit at the same x on every row. Widths
+          are in `ch` (one character's width): Space Mono is monospaced, so a
+          `ch` is exact, and it scales with the text.
           - city: 12ch, the longest city in the data ("cole harbour").
           - date: 10ch, "YYYY-MM-DD"; "rolling" is shorter.
           - labels: room for the widest combination — "30+ days",
             "borderline" and "closing soon" (30ch of text) plus each label's
             padding and border and the gaps between them. A new flag in
             FLAGS would need this widened. */}
-      <span className="flex shrink-0 items-center gap-4 text-meta text-text-dim">
+      <span className="flex shrink-0 items-center text-meta text-text-dim">
         <span className="w-[12ch] truncate text-right" title={job.city ?? undefined}>
           {job.city?.toLowerCase() ?? '—'}
         </span>
-        <span className="w-[10ch] text-right">{dateText(job)}</span>
-        <span className="flex w-[38ch] justify-end gap-2">
+        <span className="w-[3ch] text-center">·</span>
+        <span className="w-[10ch]">{dateText(job)}</span>
+        <span className="ml-4 flex w-[38ch] gap-2">
           <Labels job={job} />
         </span>
       </span>
