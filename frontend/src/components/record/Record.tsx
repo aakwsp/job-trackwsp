@@ -17,7 +17,11 @@ type Props = {
   // Called once the panel has finished sliding out; the parent unmounts it.
   onClose: () => void
   onOpen: (job: Job) => void
-  onMarkApplied: (job: Job) => void
+  // [ mark applied ] / [ applied ✓ ]: applies, or unapplies once applied.
+  onToggleApplied: (job: Job) => void
+  // The "a" key: applies, or (pressed twice quickly) unapplies. App owns the
+  // double-press timing, shared with the list's hover key.
+  onPressA: (job: Job) => void
   // Takes back "mark applied" entirely (deletes the application).
   onUnapply: (job: Job) => void
   onAdvance: (app: Application) => void
@@ -46,7 +50,8 @@ export default function Record({
   initialTab,
   onClose,
   onOpen,
-  onMarkApplied,
+  onToggleApplied,
+  onPressA,
   onUnapply,
   onAdvance,
   onReject,
@@ -146,7 +151,7 @@ export default function Record({
       const keyTab = tabForKey(e.key)
       if (keyTab) setTab(keyTab)
       else if (e.key === 'o' && job?.url) onOpen(job)
-      else if (e.key === 'a' && job && !app) onMarkApplied(job)
+      else if (e.key === 'a' && job) onPressA(job)
       else if (e.key === 'n' && app && next) onAdvance(app)
       else if (e.key === 'r' && app && canReject) onReject(app)
       else if (e.key === 'u' && canUndo) undo()
@@ -184,7 +189,7 @@ export default function Record({
   const keys = [
     `0–${TABS.length - 1} tabs`,
     job?.url && 'o open posting',
-    job && !app && 'a mark applied',
+    job && (app ? 'a a unapply' : 'a mark applied'),
     next && 'n next stage',
     canReject && 'r mark rejected',
     canUndo && 'u undo',
@@ -201,7 +206,7 @@ export default function Record({
     canReject,
     canUndo,
     open: () => job && onOpen(job),
-    markApplied: () => job && onMarkApplied(job),
+    toggleApplied: () => job && onToggleApplied(job),
     advance: () => app && onAdvance(app),
     reject: () => app && onReject(app),
     undo,

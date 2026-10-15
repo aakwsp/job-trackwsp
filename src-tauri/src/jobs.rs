@@ -156,7 +156,19 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
         (false, Some((_, status))) if status != "applied" => {
             return Err(JobsError::ApplicationInProgress(status));
         }
-        (false, Some(_)) => {
+        (false, Some((app_id, _))) => {
+            // Still 'applied', but with more than its first event (say it
+            // advanced and was undone back): deleting the application would
+            // delete that history too, so refuse the same way.
+            let events: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM application_events WHERE application_id = ?",
+            )
+            .bind(app_id)
+            .fetch_one(&mut *tx)
+            .await?;
+            if events > 1 {
+                return Err(JobsError::ApplicationInProgress("applied, with later events".into()));
+            }
             sqlx::query(
                 "INSERT INTO job_notes (job_id, body)
                  SELECT job_id, notes FROM applications
@@ -309,6 +321,23 @@ mod tests {
                 .execute(&pool)
                 .await
                 .unwrap();
+            assert!(matches!(
+                set_applied(&pool, id, false).await,
+                Err(JobsError::ApplicationInProgress(_))
+            ));
+
+            // Back at 'applied' but with history: still refused.
+            sqlx::query("UPDATE applications SET status = 'applied'")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query(
+                "INSERT INTO application_events (application_id, type, occurred_at)
+                 SELECT id, 'applied', '2026-01-01T00:00:00Z' FROM applications",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
             assert!(matches!(
                 set_applied(&pool, id, false).await,
                 Err(JobsError::ApplicationInProgress(_))

@@ -39,6 +39,8 @@ const STRIPE_COLORS = { applied: 'sand', assessment: 'blue', interview: 'pink', 
 // The bottom confirmation line after a hover shortcut.
 type Toast = { id: number; text: string; onUndo?: () => void }
 const TOAST_MS = 5000
+// Two "a" presses closer together than this count as a double press.
+const DOUBLE_PRESS_MS = 400
 
 type OpenRecord = { jobId: number | null; appId: number | null; from: RecordFrom; tab: Tab }
 
@@ -154,8 +156,8 @@ export default function App() {
     return () => clearTimeout(t)
   }, [toast])
 
-  // Hover shortcuts on list items: "a" marks the posting under the mouse
-  // applied, "o" opens it. Items carry `data-job-id` / `data-app-id`, so
+  // Hover shortcuts on list items: "a" toggles applied on the posting under
+  // the mouse (see `pressA`), "o" opens it. Items carry `data-job-id` / `data-app-id`, so
   // instead of tracking hover in state, the handler asks the DOM which item
   // is hovered right now (`:hover`), falling back to the one with keyboard
   // focus. No dependency list, for the same reason as Record's handler: it
@@ -182,16 +184,11 @@ export default function App() {
       if (e.key === 'o') {
         if (job?.url) open(job)
         else setToast({ text: 'no posting link' })
-      } else if (job && !job.applied) {
-        markApplied(job)
-        // A stray "a" is easy to press, so say what happened and offer the
-        // way back for a few seconds.
-        setToast({
-          text: `applied · ${job.company.toLowerCase()}`,
-          onUndo: () => unapply({ ...job, applied: true, app_status: 'applied' }),
-        })
-      } else if (job || app) {
-        setToast({ text: `already applied · ${(job?.company ?? app?.company ?? '').toLowerCase()}` })
+      } else if (job) {
+        pressA(job)
+      } else if (app) {
+        // Added by hand: there's no posting to toggle, only the record.
+        setToast({ text: `${app.company.toLowerCase()} has no posting — use undo on the record` })
       } else return
       e.preventDefault()
     }
@@ -235,7 +232,7 @@ export default function App() {
     setApps(() => fresh)
   }
 
-  // [ mark applied ]. Optimistic on the JOBS row: it flips now (with today
+  // Marks applied. Optimistic on the JOBS row: it flips now (with today
   // as the applied date) and rolls back if Rust says no. Then the
   // applications are refetched, which is what puts it in PIPELINE's applied
   // column and gives the open record its application tab.
@@ -246,11 +243,11 @@ export default function App() {
       await refreshApps()
     } catch (e) {
       patchJob(job.id, { applied: false, applied_at: null, app_status: null })
-      setNotice(String(e))
+      setToast({ text: String(e) })
     }
   }
 
-  // Undo of [ mark applied ]. Rust refuses (and we roll back) if the
+  // Takes it back. Rust refuses (and we roll back) if the
   // application has already moved past 'applied', so this can't throw away
   // an interview.
   async function unapply(job: Job) {
@@ -260,7 +257,52 @@ export default function App() {
       await refreshApps()
     } catch (e) {
       patchJob(job.id, { applied: true, applied_at: job.applied_at, app_status: job.app_status })
-      setNotice(String(e))
+      setToast({ text: String(e) })
+    }
+  }
+
+  // Applied as a toggle, shared by the hover key, the record's "a" and its
+  // [ mark applied ] / [ applied ✓ ] button. Both directions show the
+  // bottom line with [ undo ], which runs the opposite direction.
+  function applyJob(job: Job) {
+    markApplied(job)
+    setToast({
+      text: `applied · ${job.company.toLowerCase()}`,
+      onUndo: () => unapplyJob({ ...job, applied: true, app_status: 'applied' }),
+    })
+  }
+
+  // Only while the application is still at its first event. Past that,
+  // deleting it would delete its history, so the record's per-event undo
+  // is the way back instead. (Rust refuses too; this just says why first.)
+  function unapplyJob(job: Job) {
+    const app = apps.find((a) => a.job_id === job.id)
+    if (app && (app.status !== 'applied' || app.events.length > 1)) {
+      setToast({ text: `${job.company.toLowerCase()} has progress — use undo on the record` })
+      return
+    }
+    unapply(job)
+    setToast({
+      text: `unapplied · ${job.company.toLowerCase()}`,
+      onUndo: () => applyJob({ ...job, applied: false, applied_at: null, app_status: null }),
+    })
+  }
+
+  const toggleApplied = (job: Job) => (job.applied ? unapplyJob(job) : applyJob(job))
+
+  // The "a" key. Not applied: applies. Applied: the first press only warns,
+  // and a second press on the same posting within DOUBLE_PRESS_MS unapplies,
+  // so one stray key can't undo an application. A ref, not state: it's
+  // bookkeeping between key presses, nothing renders from it.
+  const lastA = useRef<{ jobId: number; at: number } | null>(null)
+  function pressA(job: Job) {
+    const prev = lastA.current
+    lastA.current = null
+    if (!job.applied) applyJob(job)
+    else if (prev?.jobId === job.id && performance.now() - prev.at < DOUBLE_PRESS_MS) unapplyJob(job)
+    else {
+      lastA.current = { jobId: job.id, at: performance.now() }
+      setToast({ text: 'press a again to unapply' })
     }
   }
 
@@ -526,8 +568,9 @@ export default function App() {
           initialTab={record.tab}
           onClose={closeRecord}
           onOpen={open}
-          onMarkApplied={markApplied}
-          onUnapply={unapply}
+          onToggleApplied={toggleApplied}
+          onPressA={pressA}
+          onUnapply={unapplyJob}
           onAdvance={(app) => move(api.advanceStage, app)}
           onReject={(app) => move(api.markRejected, app)}
           onUndoEvent={(app) => move(api.undoEvent, app)}

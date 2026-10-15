@@ -11,6 +11,7 @@ import {
   outlineButton,
   primaryButton,
   ghostButton,
+  appliedButton,
   Keyed,
   type Pad,
   type TagSpec,
@@ -26,7 +27,7 @@ export type RecordModel = {
   canReject: boolean
   canUndo: boolean
   open: () => void
-  markApplied: () => void
+  toggleApplied: () => void // applies, or unapplies once applied
   advance: () => void
   reject: () => void
   undo: () => void
@@ -272,7 +273,7 @@ function PostingBrief({ m, pad }: SectionProps) {
 function PrimaryAction({ m, pad }: SectionProps) {
   const action =
     !m.app && m.job ? (
-      <button type="button" onClick={m.markApplied} className={primaryButton}>
+      <button type="button" onClick={m.toggleApplied} className={primaryButton}>
         <Keyed label="mark applied" k="a" />
       </button>
     ) : m.next ? (
@@ -281,7 +282,23 @@ function PrimaryAction({ m, pad }: SectionProps) {
       </button>
     ) : null
   if (!action) return null
-  return <div className={`pt-6 ${pad}`}>{action}</div>
+  return (
+    <div className={`flex flex-wrap gap-2 pt-6 ${pad}`}>
+      {action}
+      {m.app && <AppliedButton m={m} />}
+    </div>
+  )
+}
+
+// What [ mark applied ] turns into once applied. Clicking it unapplies,
+// which App only allows while the application has no progress.
+function AppliedButton({ m }: { m: RecordModel }) {
+  if (!m.job) return null
+  return (
+    <button type="button" onClick={m.toggleApplied} aria-label="applied — click to unapply" className={appliedButton}>
+      <Keyed label="applied ✓" k="a" />
+    </button>
+  )
 }
 
 // Four cells, one per stage, each with the date it was reached. The current
@@ -455,7 +472,7 @@ function PostingActions({ m }: { m: RecordModel }) {
   if (!app) {
     return (
       <div className="flex flex-wrap gap-2">
-        <button type="button" onClick={m.markApplied} className={primaryButton}>
+        <button type="button" onClick={m.toggleApplied} className={primaryButton}>
           <Keyed label="mark applied" k="a" />
         </button>
         <OpenButton m={m} />
@@ -474,7 +491,10 @@ function PostingActions({ m }: { m: RecordModel }) {
           [ view application → ]
         </TabLink>
       </div>
-      <OpenButton m={m} />
+      <div className="flex flex-wrap gap-2">
+        <AppliedButton m={m} />
+        <OpenButton m={m} />
+      </div>
     </>
   )
 }
@@ -489,7 +509,7 @@ export function ApplicationSection({ m, pad }: SectionProps) {
         </Empty>
         <div className={`flex flex-wrap gap-2 pt-[1.375rem] ${pad}`}>
           {job && (
-            <button type="button" onClick={m.markApplied} className={primaryButton}>
+            <button type="button" onClick={m.toggleApplied} className={primaryButton}>
               <Keyed label="mark applied" k="a" />
             </button>
           )}

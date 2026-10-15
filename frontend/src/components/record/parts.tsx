@@ -10,6 +10,11 @@ import { agoText } from '../../lib/jobs'
 export const ghostButton = 'inline-flex h-8 cursor-pointer items-center px-1 text-meta text-text-muted hover:text-text'
 export const outlineButton =
   'inline-flex h-11 cursor-pointer items-center border border-rule-strong px-4 text-meta text-text hover:border-text-muted hover:bg-bg disabled:cursor-default disabled:text-text-dim disabled:hover:border-rule-strong disabled:hover:bg-transparent'
+// [ applied ✓ ]: the outline button in green. Its own string rather than
+// `outlineButton` + `text-green`, because two text colours on one element
+// don't resolve by order in `className` (see styles.ts).
+export const appliedButton =
+  'inline-flex h-11 cursor-pointer items-center border border-rule-strong px-4 text-meta text-green hover:border-text-muted hover:bg-bg'
 // The one filled button. `hover:opacity-90` lightens it a touch against the
 // dark panel without inventing a new colour.
 export const primaryButton =
