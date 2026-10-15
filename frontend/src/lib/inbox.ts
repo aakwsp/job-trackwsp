@@ -26,14 +26,17 @@ export function eventLabel(type: string | null): string {
 /** Scores under this are shown pink. */
 export const LOW_SCORE = 0.8
 
-// INBOX's one view switch (JT-18): `newest` is the by-email list in its
-// // checking, // auto, // checked sections; `company` is the by-job
-// grouping, companies A–Z.
+// INBOX's sort (JT-18), inside each // checking, // auto, // checked
+// section: newest first, or by company A–Z (newest first within one).
 export type MailSort = 'newest' | 'company'
 
-/** Newest first. */
-export function sortRows(rows: InboxRow[]): InboxRow[] {
-  return [...rows].sort((x, y) => (y.received_at ?? '').localeCompare(x.received_at ?? ''))
+export function sortRows(rows: InboxRow[], sort: MailSort): InboxRow[] {
+  const recv = (r: InboxRow) => r.received_at ?? ''
+  const a = [...rows]
+  if (sort === 'company')
+    a.sort((x, y) => (x.company ?? '').toLowerCase().localeCompare((y.company ?? '').toLowerCase()) || recv(y).localeCompare(recv(x)))
+  else a.sort((x, y) => recv(y).localeCompare(recv(x)))
+  return a
 }
 
 // Remembered like the JOBS view mode (lib/view.ts): localStorage, and a

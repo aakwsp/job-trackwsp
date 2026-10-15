@@ -1,8 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import { useStuck } from '../../lib/useStuck'
 import { loadFolded, loadListCollapsed, saveFolded, saveListCollapsed, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
-import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
+import type { IgnoredRow, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, loadSort, localDay, saveSort, sortRows, type MailSort } from '../../lib/inbox'
 import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
@@ -26,14 +25,13 @@ type Props = {
 
 
 export default function Inbox({ inbox, top, connected }: Props) {
-  // Sort is the view: newest = by email in sections, company = by job.
-  // `g` flips it. Remembered like the JOBS view mode.
+  // Sort, inside each section: newest or company. `g` flips it.
+  // Remembered like the JOBS view mode.
   const [sort, setSortState] = useState<MailSort>(loadSort)
   function setSort(s: MailSort) {
     setSortState(s)
     saveSort(s)
   }
-  const mode = sort === 'company' ? 'job' : 'email'
   // The search line is always there: `/` jumps into it, esc clears it and
   // leaves it.
   const searchRef = useRef<HTMLInputElement>(null)
@@ -46,7 +44,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
       return !n
     })
   }
-  const [jobId, setJobId] = useState<number | null>(null)
   const [showIgnored, setShowIgnored] = useState(false)
   // [ filters ] (include / exclude per section and unread), kept like
   // the JOBS filters.
@@ -78,11 +75,11 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // for Gemini or routing), // auto (applied automatically, untouched),
   // // checked (you confirmed or rejected it). The sort applies inside each.
   const checking = useMemo(
-    () => sortRows(rows.filter((r) => r.status === 'checking' || r.status === 'pending' || r.status === 'extracted')),
-    [rows],
+    () => sortRows(rows.filter((r) => r.status === 'checking' || r.status === 'pending' || r.status === 'extracted'), sort),
+    [rows, sort],
   )
-  const autoRows = useMemo(() => sortRows(rows.filter((r) => r.status === 'auto')), [rows])
-  const checked = useMemo(() => sortRows(rows.filter((r) => r.status === 'confirmed' || r.status === 'rejected')), [rows])
+  const autoRows = useMemo(() => sortRows(rows.filter((r) => r.status === 'auto'), sort), [rows, sort])
+  const checked = useMemo(() => sortRows(rows.filter((r) => r.status === 'confirmed' || r.status === 'rejected'), sort), [rows, sort])
   const all = useMemo(() => [...autoRows, ...checked], [autoRows, checked])
 
   // Something is always open, like the board: the first checking email,
@@ -93,14 +90,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
     const first = checking[0] ?? all[0]
     if (first) open(first.id, false)
   }, [rows, openId, checking, all, open])
-
-  // Opening a job opens its newest email (the board's default).
-  async function openJob(id: number) {
-    setJobId(id)
-    const emails = (await api.appTimeline(id)).filter((n) => n.kind === 'email')
-    const last = emails.at(-1)
-    if (last && last.email_id !== null) open(last.email_id)
-  }
 
   // Keys: `m` read/unread, `g` by email / by job, ←/→ along the open
   // email's timeline. A ref keeps the handler reading current values
@@ -144,37 +133,30 @@ export default function Inbox({ inbox, top, connected }: Props) {
     inbox.patchRow(id, { status })
     if (next !== undefined) open(next, false)
   }
-  const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
-  const keyState = useRef({ current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob })
+  const keyState = useRef({ current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, sort })
   useEffect(() => {
-    keyState.current = { current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob }
+    keyState.current = { current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, sort }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob } = keyState.current
+      const { current: r, timeline, openId: id, order: ids, sort: by } = keyState.current
       if (e.key === '/') {
         searchRef.current?.focus()
       } else if (e.key === '[') {
         toggleNarrow()
       } else if (e.key === 'j' || e.key === 'k') {
         const step = e.key === 'j' ? 1 : -1
-        if (md === 'job') {
-          const next = jobs[jobs.indexOf(job ?? -1) + step] ?? (job === null ? jobs[0] : undefined)
-          if (next === undefined) return
-          goJob(next)
-        } else {
-          const next = ids[ids.indexOf(id ?? -1) + step] ?? (id === null ? ids[0] : undefined)
-          if (next === undefined) return
-          inbox.open(next)
-          // Keep the newly open row in view as j/k walk the list.
-          document.querySelector(`[data-inbox-row="${next}"]`)?.scrollIntoView({ block: 'nearest' })
-        }
+        const next = ids[ids.indexOf(id ?? -1) + step] ?? (id === null ? ids[0] : undefined)
+        if (next === undefined) return
+        inbox.open(next)
+        // Keep the newly open row in view as j/k walk the list.
+        document.querySelector(`[data-inbox-row="${next}"]`)?.scrollIntoView({ block: 'nearest' })
       } else if (e.key === 'm' && r) {
         inbox.act(() => api.inboxSetRead(r.id, !r.read))
       } else if (e.key === 'g') {
-        setSort(md === 'email' ? 'company' : 'newest')
+        setSort(by === 'newest' ? 'company' : 'newest')
       } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && timeline.length > 0) {
         const i = timeline.findIndex((n) => n.email_id === id)
         const next = timeline[i + (e.key === 'ArrowRight' ? 1 : -1)]
@@ -220,10 +202,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
       }`}
     >
       <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
-        {mode === 'job' ? (
-          <JobList jobs={inbox.jobs ?? []} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} stickAt={barH} />
-        ) : (
-          <>
+        <>
         {checking.length > 0 ? (
           <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold}>
             <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
@@ -272,8 +251,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
           onToggle={() => setShowIgnored((x) => !x)}
           onRestore={(r) => inbox.act(() => api.mailRestore(r.gmail_id))}
         />}
-          </>
-        )}
+        </>
       </section>
 
       {/* `self-start` + `sticky`: the pane stays in view, under the
@@ -291,7 +269,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
             act={inbox.act}
             notify={inbox.notify}
             onResolved={resolved}
-            large={mode === 'job'}
+            large={false}
             onOpenEmail={(id) => open(id)}
           />
         ) : (
@@ -300,79 +278,6 @@ export default function Inbox({ inbox, top, connected }: Props) {
       </section>
     </div>
     </div>
-  )
-}
-
-// By job: company → its applications (role, stage, email count, unread),
-// as on the InboxByJob board.
-function JobList({
-  jobs,
-  currentId,
-  onOpen,
-  query,
-  narrow,
-  stickAt,
-}: {
-  jobs: InboxJob[]
-  currentId: number | null
-  onOpen: (applicationId: number) => void
-  query: string
-  narrow: boolean
-  // The toolbar band's height: company headers stick under it.
-  stickAt: number
-}) {
-  const companies = new Map<string, InboxJob[]>()
-  for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
-  // Companies A–Z; jobs inside a company keep their order (latest
-  // activity first, as Rust returns them).
-  const groups = [...companies].sort(([a], [b]) => a.localeCompare(b))
-  if (groups.length === 0)
-    return (
-      <p className="px-6 py-6 text-meta text-text-dim">
-        {query ? `nothing matches “${query}”.` : 'no emails matched to an application yet.'}
-      </p>
-    )
-  return (
-    <>
-      {groups.map(([co, js]) => (
-        // Each group is the sticky header's containing block, so the next
-        // company's header pushes this one up instead of overlapping it.
-        <div key={co} className="border-b border-rule">
-          <CompanyHeader stickAt={stickAt}>{narrow ? cut(co) : <Hl text={co} query={query} />}</CompanyHeader>
-          <ul className="m-0 list-none p-0 pb-2">
-            {js.map((j) => {
-              const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
-              const current = j.application_id === currentId
-              return (
-                <li key={j.application_id}>
-                  <button
-                    type="button"
-                    onClick={() => onOpen(j.application_id)}
-                    aria-current={current || undefined}
-                    className={`block w-full cursor-pointer appearance-none py-2 pr-5 pl-6 text-left text-text ${
-                      current ? 'bg-bg-active outline outline-text -outline-offset-1' : 'bg-transparent hover:bg-bg-active'
-                    }`}
-                  >
-                    <span className="flex items-baseline gap-3">
-                      <span className="min-w-0 flex-1 truncate text-meta">
-                        <Hl text={j.title} query={query} />
-                      </span>
-                      <span data-color={color ?? undefined} className={`text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
-                        {j.status}
-                      </span>
-                    </span>
-                    <span className="mt-1 block truncate text-[0.65625rem] text-text-dim">
-                      {j.emails} {narrow ? '' : j.emails === 1 ? 'email' : 'emails'}
-                      {j.unread > 0 && <span className="text-text"> · {j.unread}{narrow ? '' : ' unread'}</span>}
-                    </span>
-                  </button>
-                </li>
-              )
-            })}
-          </ul>
-        </div>
-      ))}
-    </>
   )
 }
 
@@ -414,24 +319,6 @@ function Section({
         <div className="reveal-inner">{children}</div>
       </div>
     </section>
-  )
-}
-
-// A company header in the by-job list: sticky (same surface as the list),
-// with a hairline only while it's stuck.
-function CompanyHeader({ children, stickAt }: { children: ReactNode; stickAt: number }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const stuck = useStuck(ref, stickAt)
-  return (
-    <div
-      ref={ref}
-      // 1px above the band's bottom edge, so useStuck can tell it's stuck.
-      className={`sticky top-[calc(var(--toolbar-h)-1px)] z-10 border-b bg-bg pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05] ${
-        stuck ? 'border-rule' : 'border-transparent'
-      }`}
-    >
-      {children}
-    </div>
   )
 }
 

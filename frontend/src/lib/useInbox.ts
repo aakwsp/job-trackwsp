@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import * as api from '../api'
-import type { IgnoredRow, InboxDetail, InboxJob, InboxRow } from '../types'
+import type { IgnoredRow, InboxDetail, InboxRow } from '../types'
 
 // INBOX's data (JT-18): the list, the open email's detail, the ignored
 // list. Rust emits `inbox-changed` after routing runs and INBOX actions,
@@ -16,7 +16,6 @@ export function useInbox(active: boolean, notify: Notify) {
   const [openId, setOpenId] = useState<number | null>(null)
   const [detail, setDetail] = useState<InboxDetail | null>(null)
   const [ignored, setIgnored] = useState<IgnoredRow[] | null>(null)
-  const [jobs, setJobs] = useState<InboxJob[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   // Bumped by the events below; the effects re-fetch when it changes.
   const [version, setVersion] = useState(0)
@@ -46,10 +45,6 @@ export function useInbox(active: boolean, notify: Notify) {
     api
       .inboxIgnored()
       .then((r) => !stale && setIgnored(r))
-      .catch(() => {})
-    api
-      .inboxJobs(q)
-      .then((r) => !stale && setJobs(r))
       .catch(() => {})
     return () => {
       stale = true
@@ -109,7 +104,6 @@ export function useInbox(active: boolean, notify: Notify) {
   return {
     rows,
     ignored,
-    jobs,
     query,
     setQuery,
     searched: applied,
