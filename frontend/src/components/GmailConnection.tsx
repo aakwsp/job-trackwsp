@@ -1,5 +1,8 @@
 import type { GmailStatus } from '../lib/useGmail'
+import { useState } from 'react'
+import * as api from '../api'
 import type { MailStatus } from '../types'
+import { field } from './styles'
 import { primaryButton } from './record/parts'
 
 // The job account's connection status, from design/inbox/InboxDisconnected
@@ -25,7 +28,11 @@ export function MailStatusLine({ mail, busy }: { mail: MailStatus | null; busy: 
     <>
       <span className="text-text">{mail.total}</span> emails{dot}
       <span className="text-text">{mail.last_new}</span> new since last check{dot}
-      last checked <span className="text-text">{hhmm(mail.last_checked_at)}</span>
+      <span className="text-text">{mail.parsed}</span> parsed{dot}
+      <span className="text-text">{mail.waiting}</span> waiting
+      {mail.extracting && <span className="text-text-dim"> (parsing…)</span>}
+      {dot}last checked <span className="text-text">{hhmm(mail.last_checked_at)}</span>
+      {mail.extract_error && <span className="mt-1 block text-pink">{mail.extract_error}</span>}
     </>
   )
 }
@@ -35,6 +42,114 @@ export function MailStatusLine({ mail, busy }: { mail: MailStatus | null; busy: 
 // would be.
 function hhmm(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+}
+
+// The Gemini API key, asked for once (JT-15) while none is stored. A
+// password input so it's masked on screen; Rust puts it straight into the
+// OS keyring and never sends it back. No <form>: this sits inside the
+// hero's <p>, where a form isn't allowed, so Enter is handled here.
+export function GeminiKeyInput({ onSaved, onCancel }: { onSaved: () => void; onCancel?: () => void }) {
+  const [key, setKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save() {
+    if (!key.trim() || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await api.llmSaveKey(key)
+      setKey('') // don't keep it in the page any longer than needed
+      onSaved()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <span className="mt-2 flex flex-wrap items-center gap-3">
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => e.key === 'Enter' && save()}
+        placeholder="gemini api key"
+        aria-label="gemini api key"
+        autoComplete="off"
+        spellCheck={false}
+        className={`${field} w-64`}
+      />
+      <button
+        type="button"
+        onClick={save}
+        disabled={busy || !key.trim()}
+        className="cursor-pointer hover:text-text disabled:cursor-default disabled:opacity-50"
+      >
+        [ save key ]
+      </button>
+      {onCancel && (
+        <button type="button" onClick={onCancel} className="cursor-pointer hover:text-text">
+          [ cancel ]
+        </button>
+      )}
+      {error && <span className="text-pink">{error}</span>}
+    </span>
+  )
+}
+
+// Once a key is saved: "gemini key ••••••••••", styled like the "connected
+// as" line. [ view key ] and [ change key ] only show while the row is
+// hovered or has keyboard focus (`group-hover` / `group-focus-within`: the
+// buttons read the state of the `group` element around them). A revealed
+// key is forgotten as soon as the mouse leaves or focus moves away.
+export function GeminiKeyRow({ onChanged }: { onChanged: () => void }) {
+  const [revealed, setRevealed] = useState<string | null>(null)
+  const [changing, setChanging] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function view() {
+    setError(null)
+    try {
+      setRevealed(await api.llmGetKey())
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  if (changing)
+    return (
+      <GeminiKeyInput
+        onSaved={() => {
+          setChanging(false)
+          onChanged()
+        }}
+        onCancel={() => setChanging(false)}
+      />
+    )
+
+  const hidden = 'invisible ml-4 cursor-pointer group-focus-within:visible group-hover:visible hover:text-text'
+  return (
+    <span
+      className="group mt-1 block"
+      onMouseLeave={() => setRevealed(null)}
+      // focusout bubbles in React (as onBlur); `relatedTarget` is where
+      // focus went. Leaving the row entirely hides the key again.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setRevealed(null)
+      }}
+    >
+      gemini key <span className="text-text">{revealed ?? '••••••••••'}</span>
+      <button type="button" onClick={view} className={hidden}>
+        [ view key ]
+      </button>
+      <button type="button" onClick={() => setChanging(true)} className={hidden}>
+        [ change key ]
+      </button>
+      {error && <span className="ml-4 text-pink">{error}</span>}
+    </span>
+  )
 }
 
 // [ check mail ] at the hero's right edge, as on the board: 36px, outlined.

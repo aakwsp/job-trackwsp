@@ -88,7 +88,23 @@ insert a new row.
   `history.list` from `settings.mail_history_id` (404 → a search since the
   last successful poll). Gmail disconnected = no polling, no errors.
 - `extractions` — what the LLM pulled from an email, awaiting confirmation.
-  Nothing changes an application until the user confirms.
+  Nothing changes an application until the user confirms. JT-15
+  (`src-tauri/src/extract/`): after each poll, every `pending` email goes to
+  Gemini (`generateContent`, structured output with a JSON schema; model in
+  `settings.llm_model`, default `gemini-3.6-flash`), 3 at a time with backoff
+  on 429/5xx. One row per run: company, role, req_id, `event_type` (applied |
+  assessment | interview | offer | rejection | follow_up | scheduling |
+  job_alert | not_job), `occurred_at`, overall `confidence` and
+  `field_confidence` (JSON), `model`, and the model's `raw_response`. The
+  email becomes `extracted`, or `ignored` with `filter_reason = 'llm: <type>'`
+  and its content cleared for job_alert / not_job. A failed email stays
+  `pending` with `extract_error` and is retried next poll.
+- **Only `pending` mail is ever sent to the LLM**: `extract::Outgoing` can
+  only be built from a pending row, the status is re-read before each send,
+  and `mail::refilter` runs first. The email is fenced as untrusted data and
+  the system instruction says to ignore instructions inside it. Body capped
+  at 6000 characters. The Gemini key is in the OS keyring (service
+  `job-trackwsp`, user `gemini-api-key`), never logged or in a file.
 - `application_events` — the per-application timeline; the latest event
   determines `applications.status`.
 - `settings` — small non-secret app values. `gmail_address` is the connected
