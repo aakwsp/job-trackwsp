@@ -177,11 +177,22 @@ pub async fn reject(pool: &SqlitePool, id: i64) -> Result<ApplicationRow, JobsEr
     get(pool, id).await
 }
 
-/// Removes the latest event and recomputes the status from what's left.
-/// Refuses to remove the last one: an application with no events has no
-/// status. (Taking back "mark applied" itself is `jobs::set_applied`.)
+/// One step back: removes the latest event and recomputes the status from
+/// what's left, in one transaction. Removing rather than writing a
+/// backwards event keeps the timeline truthful. This is both the record's
+/// [ undo ] and PIPELINE's ← (JT-35): from interview it returns to
+/// assessment; from rejected/withdrawn it reopens at the stage before.
+///
+/// Stops at applied. That's the floor; taking back "mark applied" itself is
+/// `jobs::set_applied`, which deletes the whole application. The event
+/// count check is the same rule in another form (an application with no
+/// events would have no status), kept in case history ever holds more than
+/// one 'applied' event.
 pub async fn undo(pool: &SqlitePool, id: i64) -> Result<ApplicationRow, JobsError> {
     let mut tx = pool.begin().await?;
+    if status_of(&mut tx, id).await? == "applied" {
+        return Err(JobsError::BadTransition("already at applied".into()));
+    }
     let count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?")
             .bind(id)
@@ -317,6 +328,51 @@ mod tests {
             assert_eq!(undo(&pool, id).await.unwrap().status, "interview");
             assert_eq!(advance(&pool, id).await.unwrap().status, "offer");
             assert!(advance(&pool, id).await.is_err());
+        });
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ← (JT-35): each step back removes exactly one event, and the status
+    /// is whatever the new latest event says.
+    #[test]
+    fn back_removes_one_event_and_recomputes_status() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+
+        tauri::async_runtime::block_on(async {
+            let id = add(&pool, "acme", "intern", None).await.unwrap().id;
+            advance(&pool, id).await.unwrap(); // assessment
+            advance(&pool, id).await.unwrap(); // interview
+            let before = reject(&pool, id).await.unwrap();
+            assert_eq!(before.events.len(), 4);
+
+            // Rejected → reopened at interview.
+            let after = undo(&pool, id).await.unwrap();
+            assert_eq!(after.events.len(), before.events.len() - 1);
+            assert_eq!(after.status, after.events.last().unwrap().kind);
+            assert_eq!(after.status, "interview");
+            // The removed event was the latest one; the rest are untouched.
+            let ids = |a: &ApplicationRow| a.events.iter().map(|e| e.id).collect::<Vec<_>>();
+            assert_eq!(ids(&after), ids(&before)[..3]);
+
+            // And the stored status agrees with the returned row.
+            let stored: String = sqlx::query_scalar("SELECT status FROM applications WHERE id = ?")
+                .bind(id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(stored, "interview");
+
+            let a = undo(&pool, id).await.unwrap();
+            assert_eq!((a.status.as_str(), a.events.len()), ("assessment", 2));
+            let a = undo(&pool, id).await.unwrap();
+            assert_eq!((a.status.as_str(), a.events.len()), ("applied", 1));
+
+            // Hard stop at applied: refused, nothing removed.
+            assert!(matches!(undo(&pool, id).await, Err(JobsError::BadTransition(_))));
+            assert_eq!(list(&pool).await.unwrap()[0].events.len(), 1);
         });
 
         drop(pool);

@@ -27,6 +27,8 @@ type Props = {
   onAdvance: (app: Application) => void
   onReject: (app: Application) => void
   onUndoEvent: (app: Application) => void
+  // ← / → on the application tab: one stage back or forward (JT-35).
+  onStep: (app: Application, dir: 1 | -1) => void
   // Rejects with a message if the save failed.
   onSaveNotes: (body: string) => Promise<void>
 }
@@ -56,6 +58,7 @@ export default function Record({
   onAdvance,
   onReject,
   onUndoEvent,
+  onStep,
   onSaveNotes,
 }: Props) {
   const panelRef = useRef<HTMLElement>(null)
@@ -161,6 +164,11 @@ export default function Record({
       if (e.target instanceof Element && e.target.closest('textarea, input')) return
       const keyTab = tabForKey(e.key)
       if (keyTab) setTab(keyTab)
+      // Plain arrows only (ctrl+arrows switch pages, shift+arrows select
+      // text; ctrl/alt already returned above). Only on the application
+      // tab, where the stage is what you're looking at.
+      else if ((e.key === 'ArrowRight' || e.key === 'ArrowLeft') && !e.shiftKey && tab === 'application' && app)
+        onStep(app, e.key === 'ArrowRight' ? 1 : -1)
       else if (e.key === 'o' && job?.url) onOpen(job)
       else if (e.key === 'a' && job) onPressA(job)
       else if (e.key === 'n' && app && next) onAdvance(app)
@@ -204,6 +212,7 @@ export default function Record({
     next && 'n next stage',
     canReject && 'r mark rejected',
     canUndo && 'u undo',
+    tab === 'application' && app && '← → stage',
     'esc close',
   ]
     .filter(Boolean)
