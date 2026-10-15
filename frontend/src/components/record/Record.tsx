@@ -30,9 +30,10 @@ type Props = {
 // One record for a posting and/or its application, opened from JOBS (on the
 // posting tab) or from PIPELINE (on the application tab).
 //
-// Drawer mode slides in from the right and shows one tab at a time. The
-// expand button swaps it for a larger centred page with all four sections
-// in a two-column grid, where the tabs become jump links.
+// Drawer mode slides in from the right; the expand button swaps it for a
+// larger centred page. Both show one tab at a time, and they share `tab`,
+// so collapsing back keeps whichever tab was open. Only the summary lays
+// out differently: two columns expanded, one in the drawer.
 //
 // Sliding *in* is pure CSS (`@starting-style` on `.drawer` / `.peek` in
 // index.css). Sliding *out* needs the panel to stay on screen while it
@@ -128,14 +129,6 @@ export default function Record({
     else if (unapplies && job) onUnapply(job)
   }
 
-  // In drawer mode 1–4 switch tabs; expanded, they jump to the section.
-  function goTo(t: Tab) {
-    setTab(t)
-    // `scrollIntoView` scrolls the nearest scrolling ancestor, which here
-    // is the expanded panel itself (it's `overflow-y-auto`).
-    if (expanded) panelRef.current?.querySelector(`[data-section="${t}"]`)?.scrollIntoView({ block: 'start' })
-  }
-
   // Shortcuts. They only exist while this component is mounted, i.e. while
   // the record is open. No dependency list: the handler reads the current
   // props, so it's swapped for a fresh one every render (cheap) instead of
@@ -151,7 +144,7 @@ export default function Record({
       // While typing a note, letters are text, not shortcuts.
       if (e.target instanceof Element && e.target.closest('textarea, input')) return
       const n = Number(e.key)
-      if (n >= 1 && n <= TABS.length) goTo(TABS[n - 1])
+      if (n >= 1 && n <= TABS.length) setTab(TABS[n - 1])
       else if (e.key === 'o' && job?.url) onOpen(job)
       else if (e.key === 'a' && job && !app) onMarkApplied(job)
       else if (e.key === 'n' && app && next) onAdvance(app)
@@ -182,7 +175,7 @@ export default function Record({
   ]
 
   const keys = [
-    `1–${TABS.length} ${expanded ? 'jump' : 'tabs'}`,
+    `1–${TABS.length} tabs`,
     job?.url && 'o open posting',
     job && !app && 'a mark applied',
     next && 'n next stage',
@@ -205,6 +198,7 @@ export default function Record({
     advance: () => app && onAdvance(app),
     reject: () => app && onReject(app),
     undo,
+    goTo: setTab,
     notes: { id: notesId, value: notes, error: notesError, onChange: setNotes, onBlur: saveNotes },
   }
 
@@ -284,20 +278,17 @@ export default function Record({
     onTransitionEnd,
   } as const
 
-  const tabBar = (role: 'tabs' | 'jump') => (
-    <div
-      role={role === 'tabs' ? 'tablist' : undefined}
-      aria-label={role === 'tabs' ? 'record sections' : undefined}
-      className={`flex flex-wrap border-b border-rule ${role === 'tabs' ? 'mt-5 pr-5 pl-[1.4375rem]' : 'mt-6 pr-9 pl-[2.4375rem]'}`}
-    >
+  // `pl` lines the first tab's text up with the content below it (the
+  // tab's own `px-3` makes up the difference).
+  const tabBar = (pl: string) => (
+    <div role="tablist" aria-label="record sections" className={`mt-5 flex flex-wrap border-b border-rule pr-5 ${pl}`}>
       {TABS.map((t) => (
         <button
           key={t}
           type="button"
-          role={role === 'tabs' ? 'tab' : undefined}
-          aria-selected={role === 'tabs' ? tab === t : undefined}
-          aria-current={role === 'jump' && tab === t ? 'true' : undefined}
-          onClick={() => goTo(t)}
+          role="tab"
+          aria-selected={tab === t}
+          onClick={() => setTab(t)}
           // `-mb-px` pulls the button's 1px underline down over the bar's
           // own bottom hairline, so the active tab's line replaces it.
           className={`-mb-px h-10 cursor-pointer border-b px-3 text-[0.71875rem] tracking-[0.04em] hover:text-text ${
@@ -307,7 +298,6 @@ export default function Record({
           {t}
         </button>
       ))}
-      {role === 'jump' && <span className="ml-auto self-center text-micro text-text-dim">jump to section</span>}
     </div>
   )
 
@@ -335,13 +325,13 @@ export default function Record({
               <p className="mt-3 text-[0.8125rem] leading-normal tracking-[0.02em]">{title}</p>
               {meta}
             </div>
-            {tabBar('tabs')}
+            {tabBar('pl-[1.4375rem]')}
           </header>
 
           {/* `flex-1` + `flex-col`: the summary's notes box can grow to
               fill the rest of the panel. */}
           <div role="tabpanel" aria-label={tab} className="flex flex-1 flex-col">
-            <Section tab={tab} m={m} pad={DRAWER_PAD} expanded={false} />
+            <Section tab={tab} m={m} pad={DRAWER_PAD} wide={false} />
           </div>
 
           {keyHint}
@@ -369,34 +359,11 @@ export default function Record({
               <p className="mt-3 text-[0.8125rem] leading-normal tracking-[0.02em]">{title}</p>
               {meta}
             </div>
-            {tabBar('jump')}
+            {tabBar('pl-[2.4375rem]')}
           </header>
 
-          {/* Two columns: summary | posting, then application | emails.
-              `minmax(0, 1fr)` instead of `1fr` lets a column shrink below
-              its content's natural width, so long text wraps instead of
-              overflowing. Under 900px it's one column. */}
-          <div className="grid grid-cols-1 min-[900px]:grid-cols-2">
-            {TABS.map((t, i) => (
-              <section
-                key={t}
-                data-section={t}
-                aria-label={t}
-                // `scroll-mt-0`: jump links land the section at the very
-                // top of the panel. Odd cells get the hairline between the
-                // two columns.
-                className={`flex min-w-0 scroll-mt-0 flex-col border-b border-rule pb-[1.625rem] ${
-                  i % 2 === 1 ? 'min-[900px]:border-l' : ''
-                }`}
-              >
-                <Section
-                  tab={t}
-                  m={m}
-                  pad={i % 2 === 0 ? 'pr-8 pl-[3.1875rem]' : 'pr-9 pl-8'}
-                  expanded
-                />
-              </section>
-            ))}
+          <div role="tabpanel" aria-label={tab} className="flex flex-1 flex-col">
+            <Section tab={tab} m={m} pad="pr-12 pl-[3.1875rem]" wide />
           </div>
 
           <p className="pt-[1.375rem] pr-12 pl-[3.1875rem] text-micro leading-relaxed text-text-dim">{keys}</p>
@@ -407,10 +374,12 @@ export default function Record({
   )
 }
 
-function Section({ tab, ...props }: { tab: Tab } & Parameters<typeof SummarySection>[0]): ReactNode {
+// The summary sets its own padding per column; the rest take `pad`.
+function Section({ tab, m, pad, wide }: { tab: Tab; m: RecordModel; pad: string; wide: boolean }): ReactNode {
+  const props = { m, pad }
   switch (tab) {
     case 'summary':
-      return <SummarySection {...props} />
+      return <SummarySection m={m} wide={wide} />
     case 'posting':
       return <PostingSection {...props} />
     case 'application':
