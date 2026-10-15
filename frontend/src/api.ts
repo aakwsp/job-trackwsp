@@ -7,6 +7,7 @@ import type {
   InboxRow,
   Job,
   MailStatus,
+  NewJob,
   RouteEdit,
   SyncCounts,
   TimelineNode,
@@ -87,6 +88,8 @@ export const routeReject = (emailId: number) => invoke<void>('route_reject', { e
 export const routeEdit = (emailId: number, edit: RouteEdit) => invoke<unknown>('route_edit', { emailId, edit })
 export const routeUndo = (emailId: number) => invoke<void>('route_undo', { emailId })
 export const routeUnreject = (emailId: number) => invoke<void>('route_unreject', { emailId })
+// Returns the new application's id.
+export const routeNewJob = (emailId: number, job: NewJob) => invoke<number>('route_new_job', { emailId, job })
 // [ not ignored ]: re-fetches the email from Gmail and re-parses it.
 export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
 export const inboxJobs = (query: string | null) => invoke<InboxJob[]>('inbox_jobs', { query })

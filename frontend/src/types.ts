@@ -126,7 +126,10 @@ export type IgnoredRow = {
   filter_reason: string | null
 }
 
-export type AppRef = { id: number; company: string; title: string; status: string; applied_at: string | null }
+export type AppRef = { id: number; company: string; title: string; status: string; applied_at: string | null; city: string | null }
+
+// [ + new job ] in INBOX (routing::NewJob).
+export type NewJob = { company: string; title: string; city?: string; req_id?: string; url?: string }
 
 export type InboxDetail = {
   email: {

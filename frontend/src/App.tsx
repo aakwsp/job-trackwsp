@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import * as api from './api'
+import { listen } from '@tauri-apps/api/event'
 import type { Application, Filters, Job } from './types'
 import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
 import { loadFilters, rowCounts, saveFilters } from './lib/filters'
@@ -118,6 +119,16 @@ export default function App() {
       stale = true
     }
   }, [reloadKey])
+
+  // INBOX actions can change the lists too (a confirm moves a stage,
+  // [ + new job ] adds a posting and an application): reload them quietly.
+  // `listen` resolves to its unsubscribe function, hence the `.then`.
+  useEffect(() => {
+    const off = listen('inbox-changed', () => setReloadKey((k) => k + 1))
+    return () => {
+      off.then((f) => f())
+    }
+  }, [])
 
   const jobs = useMemo(() => (load.kind === 'ready' ? load.jobs : []), [load])
   const apps = useMemo(() => (load.kind === 'ready' ? load.apps : []), [load])

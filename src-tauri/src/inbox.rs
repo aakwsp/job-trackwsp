@@ -136,6 +136,8 @@ pub struct AppRef {
     pub title: String,
     pub status: String,
     pub applied_at: Option<String>,
+    /// The posting's city (None without a posting).
+    pub city: Option<String>,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -283,7 +285,7 @@ pub fn detail(pool: &SqlitePool, email_id: i64) -> Result<Option<Detail>, sqlx::
         block_on(
             sqlx::query_as(
                 "SELECT a.id, COALESCE(j.company, a.company, '') AS company,
-                        COALESCE(j.title, a.title, '') AS title, a.status, a.applied_at
+                        COALESCE(j.title, a.title, '') AS title, a.status, a.applied_at, j.city
                  FROM applications a LEFT JOIN jobs j ON j.id = a.job_id
                  ORDER BY company, title",
             )
@@ -308,6 +310,7 @@ pub fn detail(pool: &SqlitePool, email_id: i64) -> Result<Option<Detail>, sqlx::
                 title: a.title.clone(),
                 status: a.status.clone(),
                 applied_at: a.applied_at.clone(),
+                city: a.city.clone(),
             });
             let suggested_job = match job {
                 Some(id) => block_on(sqlx::query_as("SELECT id, company, title FROM jobs WHERE id = ?").bind(id).fetch_optional(pool))?,

@@ -518,6 +518,23 @@ async fn route_reject(app: tauri::AppHandle, email_id: i64) -> Result<(), String
     .await
 }
 
+/// INBOX [ + new job ]: a manual posting, an application on it dated from
+/// the email, and the email applied to it, in one transaction. Returns the
+/// application id. JOBS and PIPELINE reload on `inbox-changed`.
+#[tauri::command]
+async fn route_new_job(app: tauri::AppHandle, email_id: i64, job: routing::NewJob) -> Result<i64, String> {
+    off_main_thread(
+        app,
+        move |app| {
+            let id = routing::new_job(&app.state::<SqlitePool>(), email_id, job)?;
+            inbox_changed(app);
+            Ok(id)
+        },
+        |e| e,
+    )
+    .await
+}
+
 /// INBOX: takes back a reject (the bottom line's [ undo ]).
 #[tauri::command]
 async fn route_unreject(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
@@ -734,6 +751,7 @@ pub fn run() {
             route_edit,
             route_undo,
             route_unreject,
+            route_new_job,
             inbox_list,
             inbox_ignored,
             inbox_detail,

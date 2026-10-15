@@ -65,6 +65,10 @@ insert a new row.
   is its own column, not a `posting_status` value, because the sync
   overwrites `posting_status` from the sheet. JOBS excludes removed rows by
   default (the "removed" filter row); PIPELINE's record still opens them.
+  `source = 'manual'` marks a posting made in INBOX with [ + new job ]
+  (`routing::new_job`): never marked removed and not counted by the
+  removal guard; if the sheet later has the same posting, the sync merges
+  into it like any other row.
 - `applications` — the user's applications. **Never** written by the sync.
   `job_id` is nullable, since the user can apply to things the scheduler never
   found. `status` is stored and recomputed whenever an event is written.
@@ -141,6 +145,10 @@ insert a new row.
   event moves that event and `applications.applied_at` back to the email's
   date; `email_matches.redated_from` keeps the old date so undo restores
   it (`routing::redate_existing` fixed the ones attached before the rule).
+  [ + new job ] creates the manual posting, an application on it dated
+  from the email and the email's match in one transaction;
+  `email_matches.created_job_id` lets undo remove the posting and
+  application again (unless other mail has matched it since).
 - Timeline (JT-18, `inbox::timeline`, `components/Timeline.tsx`): one
   horizontal timeline per application, used in INBOX and the record's
   summary / application / emails tabs. Diamonds = emails in their stage
