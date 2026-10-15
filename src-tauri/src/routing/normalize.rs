@@ -153,6 +153,34 @@ pub fn role_similarity(a: &str, b: &str, company: &str) -> f64 {
     2.0 * shared / (ta.len() + tb.len()) as f64
 }
 
+// ── body scan ─────────────────────────────────────────────────────────────
+// Deterministic evidence from the stored email body: does it contain this
+// application's req id, exact title or city? No LLM.
+
+/// The req id appears in the body as a token of its own, ignoring
+/// separators inside it ("R-0000187113" matches "r0000187113").
+pub fn body_has_req(body: &str, req_key: &str) -> bool {
+    body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .any(|tok| {
+            let t: String = tok.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+            t == req_key
+        })
+}
+
+/// The application's exact title appears in the body (after `norm`, so
+/// punctuation and case don't matter). Titles of fewer than three words
+/// are skipped: "Developer" alone would match far too much.
+pub fn body_has_title(body: &str, title: &str) -> bool {
+    let t = norm(title);
+    t.split(' ').filter(|w| !w.is_empty()).count() >= 3 && format!(" {} ", norm(body)).contains(&format!(" {t} "))
+}
+
+/// The city appears as a whole word (or words).
+pub fn body_has_city(body: &str, city: &str) -> bool {
+    let c = norm(city);
+    !c.is_empty() && format!(" {} ", norm(body)).contains(&format!(" {c} "))
+}
+
 /// A req id worth matching on: alphanumerics only, at least 5 characters
 /// with a digit, and not just a year ("2027" came back as a req id once).
 /// Short ids match other postings by accident too easily.
@@ -199,6 +227,19 @@ mod tests {
         assert_eq!(role_similarity("", "Developer", rbc), 0.0);
         // Engineer / Engineering are the same word.
         assert_eq!(role_similarity("Software Engineering Intern", "Software Engineer Intern", "AMD"), 1.0);
+    }
+
+    #[test]
+    fn body_scan() {
+        let body = "Thanks for applying to the Software Engineer Intern, 2027 Canada position (Req R-0000187113), Toronto, ON.";
+        assert!(body_has_req(body, "r0000187113"));
+        assert!(!body_has_req(body, "r000018711")); // no partial tokens
+        assert!(body_has_title(body, "Software Engineer Intern, 2027 Canada"));
+        assert!(!body_has_title(body, "Software Engineer Intern - Backend"));
+        assert!(!body_has_title(body, "Developer")); // too short to trust
+        assert!(body_has_city(body, "Toronto"));
+        assert!(!body_has_city(body, "Waterloo"));
+        assert!(!body_has_city("Torontonians welcome", "Toronto"));
     }
 
     #[test]

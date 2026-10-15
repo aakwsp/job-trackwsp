@@ -114,7 +114,14 @@ insert a new row.
   are not evidence); a different req id rules an application out. The score
   is built from evidence (req id 0.40, company 0.25, domain 0.15, role up to
   0.25, single candidate 0.10, event date 0.05) with Gemini's confidence
-  only 0.05, and every part is stored as a reason. ≥ 0.80 with exactly one
+  only 0.05, and every part is stored as a reason. The stored body is
+  scanned too, deterministically: an application's req id (0.40), exact
+  title (0.20) or city (0.05) found in it is evidence, and narrows several
+  candidates when exactly one has it. Still ambiguous → one Gemini call
+  (`routing/picker.rs`) asks which candidate, or none; a pick narrows and
+  adds 0.10 in place of the single-candidate bonus, so it can never reach
+  auto alone. Only `extracted` / `checking` mail is sent for this; answers
+  are cached in `llm_match_hints` per candidate set (not by dry runs). ≥ 0.80 with exactly one
   match → `auto`; ambiguous, unmatched, offers, reopening a closed
   application → `checking`. Auto never moves an application backwards, never
   duplicates a stage that's already recorded (it attaches to that event),

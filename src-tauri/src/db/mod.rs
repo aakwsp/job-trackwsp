@@ -87,6 +87,7 @@ mod tests {
                 "extractions",
                 "job_notes",
                 "jobs",
+                "llm_match_hints",
                 "settings",
             ]
         );

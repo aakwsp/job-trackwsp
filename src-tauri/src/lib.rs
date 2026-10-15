@@ -438,7 +438,8 @@ fn spawn_routing(app: tauri::AppHandle) {
         if !routing::is_live(&pool) {
             return;
         }
-        match routing::run(&app.state::<routing::RoutingState>(), &pool, false) {
+        let picker = gemini_picker(&pool);
+        match routing::run(&app.state::<routing::RoutingState>(), &pool, false, picker.as_ref().map(|p| p as &dyn routing::picker::Picker)) {
             Ok(rows) if !rows.is_empty() => {
                 let auto = rows.iter().filter(|r| r.decision.route == routing::Route::Auto).count();
                 log::info!("routing: {auto} auto, {} checking", rows.len() - auto);
@@ -449,10 +450,30 @@ fn spawn_routing(app: tauri::AppHandle) {
     });
 }
 
+/// The Gemini tie-breaker for routing, if a key is stored; None otherwise
+/// (routing then just leaves ambiguous emails ambiguous).
+fn gemini_picker(pool: &SqlitePool) -> Option<routing::picker::GeminiPicker> {
+    let key = extract::get_key(&gmail::store::KeyringStore).ok().flatten()?;
+    let client = extract::gemini::GeminiHttp::new(key).ok()?;
+    Some(routing::picker::GeminiPicker {
+        client: Box::new(client),
+        model: extract::model(pool).ok()?,
+    })
+}
+
 /// What routing would do, without writing anything (JT-16's dry run).
 #[tauri::command]
 async fn route_dry_run(app: tauri::AppHandle) -> Result<Vec<routing::RunRow>, String> {
-    off_main_thread(app, |app| routing::run(&app.state::<routing::RoutingState>(), &app.state::<SqlitePool>(), true), |e| e).await
+    off_main_thread(
+        app,
+        |app| {
+            let pool = app.state::<SqlitePool>();
+            let picker = gemini_picker(&pool);
+            routing::run(&app.state::<routing::RoutingState>(), &pool, true, picker.as_ref().map(|p| p as &dyn routing::picker::Picker))
+        },
+        |e| e,
+    )
+    .await
 }
 
 /// INBOX (JT-18): apply a checking email to the matched application, or to
