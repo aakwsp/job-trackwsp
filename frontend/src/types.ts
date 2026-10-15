@@ -16,6 +16,8 @@ export type Job = {
   first_seen: string | null // 'YYYY-MM-DD'
   last_seen: string | null
   applied: boolean
+  applied_at: string | null // full ISO timestamp, UTC
+  notes: string | null
 }
 
 // Mirrors `sync::SyncCounts` in src-tauri/src/sync/mod.rs.

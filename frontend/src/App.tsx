@@ -37,9 +37,6 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
-  // Job ids applied since the last [ sync ]; the detail card offers
-  // [ undo ] for these.
-  const [recentlyApplied, setRecentlyApplied] = useState<ReadonlySet<number>>(new Set())
   // The posting shown in the detail card. An id rather than the Job itself,
   // so the card reads the live row from `jobs` and sees [ mark applied ]
   // take effect instead of holding a stale copy.
@@ -127,40 +124,46 @@ export default function App() {
     setReloadKey((k) => k + 1)
   }
 
-  // Flip one job's flag locally. The updater form `setLoad(prev => ...)`
-  // reads the latest state, so two quick clicks don't clobber each other.
-  function patchApplied(id: number, applied: boolean) {
+  // Change some fields of one job locally. The updater form
+  // `setLoad(prev => ...)` reads the latest state, so two quick clicks
+  // don't clobber each other. `Partial<Job>`: any subset of Job's fields.
+  function patchJob(id: number, patch: Partial<Job>) {
     setLoad((prev) =>
-      prev.kind === 'ready' ? { ...prev, jobs: prev.jobs.map((j) => (j.id === id ? { ...j, applied } : j)) } : prev,
+      prev.kind === 'ready' ? { ...prev, jobs: prev.jobs.map((j) => (j.id === id ? { ...j, ...patch } : j)) } : prev,
     )
   }
 
-  // [ mark applied ] in the detail card. Optimistic: the row flips now and
-  // rolls back if Rust says no.
+  // [ mark applied ] in the detail drawer. Optimistic: the row flips now
+  // (with today as the applied date) and rolls back if Rust says no.
   async function markApplied(job: Job) {
-    patchApplied(job.id, true)
-    setRecentlyApplied((prev) => new Set(prev).add(job.id))
+    patchJob(job.id, { applied: true, applied_at: new Date().toISOString() })
     try {
       await api.setApplied(job.id, true)
     } catch (e) {
-      patchApplied(job.id, false)
+      patchJob(job.id, { applied: false, applied_at: null })
       setNotice(String(e))
     }
   }
 
+  // Always offered: Rust refuses (and we roll back) if the application has
+  // already moved past 'applied', so undo can't throw away an interview.
   async function undo(job: Job) {
-    patchApplied(job.id, false)
+    patchJob(job.id, { applied: false, applied_at: null })
     try {
       await api.setApplied(job.id, false)
-      setRecentlyApplied((prev) => {
-        const next = new Set(prev)
-        next.delete(job.id)
-        return next
-      })
     } catch (e) {
-      patchApplied(job.id, true)
+      patchJob(job.id, { applied: true, applied_at: job.applied_at })
       setNotice(String(e))
     }
+  }
+
+  // Not optimistic: the drawer keeps the text either way, and only the
+  // stored copy changes here, once the DB has it. Errors go back to the
+  // drawer (which shows them by the textarea) rather than to `notice`,
+  // which is hidden behind the drawer.
+  async function saveNotes(job: Job, body: string) {
+    await api.saveNotes(job.id, body)
+    patchJob(job.id, { notes: body.trim() || null })
   }
 
   async function open(job: Job) {
@@ -177,9 +180,6 @@ export default function App() {
     setNotice(null)
     try {
       const c = await api.syncNow()
-      // "Until the next sync": applied rows lose [ undo ] and, with show
-      // applied off, drop out of the list on the reload below.
-      setRecentlyApplied(new Set())
       setNotice(`synced: ${c.inserted} new · ${c.updated} updated · ${c.merged} merged · ${c.skipped} skipped`)
       setReloadKey((k) => k + 1)
     } catch (e) {
@@ -338,12 +338,12 @@ export default function App() {
           // A different posting gets a fresh drawer (and slide-in).
           key={selected.id}
           job={selected}
-          undoable={recentlyApplied.has(selected.id)}
           onClose={() => setSelectedId(null)}
           onOpen={open}
           onMarkApplied={markApplied}
           onUndo={undo}
           onViewPipeline={viewPipeline}
+          onSaveNotes={saveNotes}
         />
       )}
     </div>

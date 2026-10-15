@@ -1,7 +1,9 @@
-//! Read side of `jobs` for the list view, plus the user's "applied" toggle.
+//! Read side of `jobs` for the list view, plus the user's "applied" toggle
+//! and notes.
 //!
 //! Nothing here writes to `jobs` — that table is owned by the sync. Applied
-//! state lives in `applications` (CLAUDE.md, "Data model").
+//! state lives in `applications` (CLAUDE.md, "Data model"). A note lives in
+//! `job_notes` until the posting is applied, then in `applications.notes`.
 
 use serde::Serialize;
 use sqlx::SqlitePool;
@@ -24,6 +26,10 @@ pub struct JobRow {
     pub first_seen: Option<String>,
     pub last_seen: Option<String>,
     pub applied: bool,
+    /// `applications.applied_at`, full ISO timestamp; None when not applied.
+    pub applied_at: Option<String>,
+    /// From `applications.notes` when applied, else `job_notes.body`.
+    pub notes: Option<String>,
 }
 
 #[derive(Debug)]
@@ -76,8 +82,12 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
         "SELECT j.id, j.company, j.title, j.city, j.req_id, j.url, j.deadline,
                 j.posting_status, j.borderline, j.borderline_reason, j.source,
                 j.first_seen, j.last_seen,
-                EXISTS (SELECT 1 FROM applications a WHERE a.job_id = j.id) AS applied
+                a.id IS NOT NULL AS applied, a.applied_at,
+                COALESCE(a.notes, n.body) AS notes
          FROM jobs j
+         -- at most one application per job (set_applied never makes a second)
+         LEFT JOIN applications a ON a.job_id = j.id
+         LEFT JOIN job_notes n ON n.job_id = j.id
          WHERE j.hidden = 0
          ORDER BY
            CASE
@@ -96,7 +106,8 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
 }
 
 /// Creates (with an `applied` event) or removes the application for
-/// `job_id`. Idempotent in both directions.
+/// `job_id`. Idempotent in both directions. The posting's note moves with it:
+/// into `applications.notes` on apply, back to `job_notes` on undo.
 pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Result<(), JobsError> {
     let mut tx = pool.begin().await?;
 
@@ -109,13 +120,19 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
     match (applied, existing) {
         (true, None) => {
             let app_id: i64 = sqlx::query_scalar(
-                "INSERT INTO applications (job_id, status, applied_at)
-                 VALUES (?, 'applied', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                "INSERT INTO applications (job_id, status, applied_at, notes)
+                 VALUES (?, 'applied', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                         (SELECT body FROM job_notes WHERE job_id = ?))
                  RETURNING id",
             )
             .bind(job_id)
+            .bind(job_id)
             .fetch_one(&mut *tx)
             .await?;
+            sqlx::query("DELETE FROM job_notes WHERE job_id = ?")
+                .bind(job_id)
+                .execute(&mut *tx)
+                .await?;
             // The timeline is the source of truth for `status`, so the
             // application starts with the event that put it there.
             sqlx::query(
@@ -130,6 +147,14 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
             return Err(JobsError::ApplicationInProgress(status));
         }
         (false, Some(_)) => {
+            sqlx::query(
+                "INSERT INTO job_notes (job_id, body)
+                 SELECT job_id, notes FROM applications
+                 WHERE job_id = ? AND notes IS NOT NULL",
+            )
+            .bind(job_id)
+            .execute(&mut *tx)
+            .await?;
             // Events go with it via ON DELETE CASCADE.
             sqlx::query("DELETE FROM applications WHERE job_id = ?")
                 .bind(job_id)
@@ -137,6 +162,51 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
                 .await?;
         }
         (true, Some(_)) | (false, None) => {}
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Saves the note for `job_id` wherever it currently lives (see the module
+/// doc). Blank clears it.
+pub async fn save_notes(pool: &SqlitePool, job_id: i64, body: &str) -> Result<(), JobsError> {
+    let body = Some(body.trim()).filter(|b| !b.is_empty());
+    let mut tx = pool.begin().await?;
+
+    let applied = sqlx::query(
+        "UPDATE applications
+         SET notes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE job_id = ?",
+    )
+    .bind(body)
+    .bind(job_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        > 0;
+
+    if !applied {
+        match body {
+            Some(body) => {
+                sqlx::query(
+                    "INSERT INTO job_notes (job_id, body) VALUES (?, ?)
+                     ON CONFLICT (job_id) DO UPDATE
+                     SET body = excluded.body,
+                         updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
+                )
+                .bind(job_id)
+                .bind(body)
+                .execute(&mut *tx)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM job_notes WHERE job_id = ?")
+                    .bind(job_id)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+        }
     }
 
     tx.commit().await?;
@@ -267,6 +337,48 @@ mod tests {
         assert_eq!(reopened[0].id, id);
         assert!(reopened[0].applied);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn notes_follow_the_application() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+
+        tauri::async_runtime::block_on(async {
+            sqlx::query(
+                "INSERT INTO jobs (job_key, company, title, triple) VALUES ('k', 'co', 't', 'k')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            let id = list(&pool).await.unwrap()[0].id;
+            let note = |pool: &SqlitePool| {
+                let pool = pool.clone();
+                async move { list(&pool).await.unwrap()[0].notes.clone() }
+            };
+
+            save_notes(&pool, id, "  ask about the term  ").await.unwrap();
+            assert_eq!(note(&pool).await.as_deref(), Some("ask about the term"));
+
+            set_applied(&pool, id, true).await.unwrap();
+            assert_eq!(note(&pool).await.as_deref(), Some("ask about the term"));
+            let in_job_notes: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM job_notes")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(in_job_notes, 0);
+            assert!(list(&pool).await.unwrap()[0].applied_at.is_some());
+
+            save_notes(&pool, id, "no referral").await.unwrap();
+            set_applied(&pool, id, false).await.unwrap();
+            assert_eq!(note(&pool).await.as_deref(), Some("no referral"));
+
+            save_notes(&pool, id, "   ").await.unwrap();
+            assert_eq!(note(&pool).await, None);
+        });
+
+        drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
