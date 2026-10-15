@@ -78,6 +78,7 @@ Fields:
   scheduling (logistics for an interview or assessment: picking times, reschedules, calendar invites),
   job_alert (job recommendations, alerts, newsletters, marketing about openings),
   not_job (not related to the student's own job applications).
+  Account administration is always not_job, even from an employer or an applicant-tracking system: verification codes and one-time passcodes, account creation or \"welcome to our careers site\", email address confirmation, password resets, and sign-in or magic login links. An email that confirms an application is still applied even if it also mentions a candidate account.
 - event_date: the date of the event itself (interview day, assessment deadline) as YYYY-MM-DD if the email states one, otherwise the date the email was received. null only if neither is known.
 - confidence: for each field, 0 to 1, how sure you are that the value is right (for a null value: how sure you are that the email really doesn't say).
 - overall_confidence: 0 to 1, how sure you are of the extraction as a whole.";
@@ -651,6 +652,48 @@ mod tests {
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The rule itself has to be in the instruction (the model's behaviour
+    /// is checked by `live_account_mail_is_not_job`).
+    #[test]
+    fn instruction_classifies_account_mail_as_not_job() {
+        let rule = SYSTEM.split("not_job (not related").nth(1).expect("not_job is defined");
+        for phrase in ["verification codes", "one-time passcodes", "account creation", "password resets", "login links"] {
+            assert!(rule.contains(phrase), "not_job rule doesn't mention {phrase:?}");
+        }
+        assert!(rule.contains("even from an employer"));
+        assert!(rule.contains("still applied"));
+    }
+
+    /// Against the real Gemini API with the key from the keyring, on made-up
+    /// emails (no real mail). Not run by default; run with:
+    ///   cargo test --lib extract::tests::live_account_mail_is_not_job -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_account_mail_is_not_job() {
+        let key = get_key(&crate::gmail::store::KeyringStore).unwrap().expect("no gemini key in the keyring");
+        let client = gemini::GeminiHttp::new(key).unwrap();
+        let cases = [
+            ("Acme Careers <no-reply@acme.example.com>", "Your Verification Code",
+             "Your verification code for the Acme Careers portal is 482913. It expires in 10 minutes.", "not_job"),
+            ("Acme Talent <talent@us.greenhouse-mail.io>", "Reset your password",
+             "We received a request to reset the password for your Acme candidate account. Click the link below to choose a new one.", "not_job"),
+            ("Acme Jobs <jobs@acme.example.com>", "Welcome to Acme Careers!",
+             "Thanks for creating an account on Acme Careers. Confirm your email address to start exploring roles.", "not_job"),
+            ("Acme <no-reply@acme.example.com>", "Your sign-in link",
+             "Use this link to sign in to your Acme candidate profile. It works once.", "not_job"),
+            ("Acme Recruiting <no-reply@acme.example.com>", "Thanks for applying at Acme - Candidate Home Account Pending Action",
+             "Thank you for applying to the Software Engineering Intern position (R-1042) at Acme. To track your application, finish setting up your Candidate Home account.", "applied"),
+        ];
+        let model = DEFAULT_MODEL;
+        for (from, subject, body, want) in cases {
+            let out = Outgoing::from_row(0, "pending", Some(from), Some(subject), Some("2026-10-15T12:00:00Z"), Some(body)).unwrap();
+            let raw = client.generate(model, SYSTEM, &out.prompt, &response_schema()).unwrap();
+            let x = parse(&raw).unwrap();
+            println!("{subject:<70} -> {} ({:.2})", x.event_type, x.overall_confidence);
+            assert_eq!(x.event_type, want, "{subject}");
+        }
     }
 
     #[test]
