@@ -1,13 +1,16 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import * as api from './api'
-import type { Filters, Job } from './types'
+import type { Application, Filters, Job } from './types'
 import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
 import { loadFilters, rowCounts, saveFilters } from './lib/filters'
 import { loadView, saveView, type ViewMode } from './lib/view'
 import { useUiScale } from './lib/useUiScale'
 import FilterBar from './components/FilterBar'
 import CityGroup from './components/CityGroup'
-import JobDetail from './components/JobDetail'
+import Record from './components/record/Record'
+import type { RecordFrom, Tab } from './lib/record'
+import Pipeline from './components/pipeline/Pipeline'
+import { stageCounts } from './lib/applications'
 import TopStrip from './components/TopStrip'
 import AppHeader from './components/AppHeader'
 import Hero from './components/Hero'
@@ -19,7 +22,21 @@ import RevealProvider from './components/RevealProvider'
 // One value instead of separate `loading` / `jobs` / `error` so impossible
 // combinations (loading *and* errored) can't happen. `kind` is the tag
 // TypeScript narrows on below.
-type LoadState = { kind: 'loading' } | { kind: 'error'; message: string } | { kind: 'ready'; jobs: Job[] }
+type LoadState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; jobs: Job[]; apps: Application[] }
+
+// Which record is open. Both ids where known: from PIPELINE it's the
+// application (and its posting, if any); from JOBS the posting (and its
+// application once there is one). Ids rather than objects, so the record
+// always reads the live rows, and marking applied in JOBS shows up in it
+// (and in PIPELINE) as soon as App's state has the new application.
+// The pipeline hero's stripe: each stage in its colour, closed in the rule
+// colour (null).
+const STRIPE_COLORS = { applied: 'sand', assessment: 'blue', interview: 'pink', offer: 'green', closed: null } as const
+
+type OpenRecord = { jobId: number | null; appId: number | null; from: RecordFrom; tab: Tab }
 
 export default function App() {
   const [load, setLoad] = useState<LoadState>({ kind: 'loading' })
@@ -37,10 +54,7 @@ export default function App() {
   const [syncing, setSyncing] = useState(false)
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
-  // The posting shown in the detail card. An id rather than the Job itself,
-  // so the card reads the live row from `jobs` and sees [ mark applied ]
-  // take effect instead of holding a stale copy.
-  const [selectedId, setSelectedId] = useState<number | null>(null)
+  const [record, setRecord] = useState<OpenRecord | null>(null)
   const [page, setPage] = useState<Page>('jobs')
 
   // <main> is the one scrolling element; every view scrolls inside it.
@@ -57,9 +71,9 @@ export default function App() {
     // promise settles, the stale result is ignored instead of overwriting a
     // newer one.
     let stale = false
-    api
-      .listJobs()
-      .then((jobs) => !stale && setLoad({ kind: 'ready', jobs }))
+    // Both lists in parallel; the page is ready once both are in.
+    Promise.all([api.listJobs(), api.listApplications()])
+      .then(([jobs, apps]) => !stale && setLoad({ kind: 'ready', jobs, apps }))
       .catch((e) => !stale && setLoad({ kind: 'error', message: String(e) }))
     return () => {
       stale = true
@@ -67,6 +81,7 @@ export default function App() {
   }, [reloadKey])
 
   const jobs = useMemo(() => (load.kind === 'ready' ? load.jobs : []), [load])
+  const apps = useMemo(() => (load.kind === 'ready' ? load.apps : []), [load])
 
   // useMemo: only recompute when the inputs change, not on every render
   // (e.g. while `syncing` flips). Cheap at 218 rows, but it also keeps the
@@ -76,7 +91,16 @@ export default function App() {
     [jobs, filters],
   )
   const groups = useMemo(() => groupByCity(visible), [visible])
-  const selected = jobs.find((j) => j.id === selectedId) ?? null
+
+  // Resolve the open record against the live lists. The application is
+  // looked up by its own id first, then by posting: that's how one opened
+  // from JOBS picks up the application [ mark applied ] just created, and
+  // how one opened from PIPELINE survives an undo that removes it.
+  const recordApp = record
+    ? (apps.find((a) => a.id === record.appId) ?? apps.find((a) => record.jobId !== null && a.job_id === record.jobId) ?? null)
+    : null
+  const recordJobId = record?.jobId ?? recordApp?.job_id ?? null
+  const recordJob = jobs.find((j) => j.id === recordJobId) ?? null
 
   // Restore the scroll position of the view just switched to. A *layout*
   // effect runs after React updates the DOM but before the browser paints,
@@ -102,10 +126,6 @@ export default function App() {
     setPage(p)
   }
 
-  function viewPipeline() {
-    setSelectedId(null)
-    switchPage('pipeline')
-  }
   const counts = useMemo(() => rowCounts(jobs, filters), [jobs, filters])
 
   // Every filter change goes through here so it's saved for next launch.
@@ -113,6 +133,11 @@ export default function App() {
     setFilters(next)
     saveFilters(next)
   }
+
+  // useCallback: Record's close-timer effect depends on `onClose`, so it
+  // must stay the same function across App re-renders, or the 400ms safety
+  // timer would restart on every one.
+  const closeRecord = useCallback(() => setRecord(null), [])
 
   function changeView(v: ViewMode) {
     setView(v)
@@ -133,37 +158,78 @@ export default function App() {
     )
   }
 
-  // [ mark applied ] in the detail drawer. Optimistic: the row flips now
-  // (with today as the applied date) and rolls back if Rust says no.
+  // Same idea for applications. `replaceApp` swaps in the row Rust returned
+  // after a pipeline move; `refreshApps` refetches them all, for changes
+  // made through `set_applied`, which creates or deletes one.
+  function setApps(update: (apps: Application[]) => Application[]) {
+    setLoad((prev) => (prev.kind === 'ready' ? { ...prev, apps: update(prev.apps) } : prev))
+  }
+  const replaceApp = (app: Application) => setApps((all) => all.map((a) => (a.id === app.id ? app : a)))
+  async function refreshApps() {
+    const fresh = await api.listApplications()
+    setApps(() => fresh)
+  }
+
+  // [ mark applied ]. Optimistic on the JOBS row: it flips now (with today
+  // as the applied date) and rolls back if Rust says no. Then the
+  // applications are refetched, which is what puts it in PIPELINE's applied
+  // column and gives the open record its application tab.
   async function markApplied(job: Job) {
     patchJob(job.id, { applied: true, applied_at: new Date().toISOString() })
     try {
       await api.setApplied(job.id, true)
+      await refreshApps()
     } catch (e) {
       patchJob(job.id, { applied: false, applied_at: null })
       setNotice(String(e))
     }
   }
 
-  // Always offered: Rust refuses (and we roll back) if the application has
-  // already moved past 'applied', so undo can't throw away an interview.
-  async function undo(job: Job) {
+  // Undo of [ mark applied ]. Rust refuses (and we roll back) if the
+  // application has already moved past 'applied', so this can't throw away
+  // an interview.
+  async function unapply(job: Job) {
     patchJob(job.id, { applied: false, applied_at: null })
     try {
       await api.setApplied(job.id, false)
+      await refreshApps()
     } catch (e) {
       patchJob(job.id, { applied: true, applied_at: job.applied_at })
       setNotice(String(e))
     }
   }
 
-  // Not optimistic: the drawer keeps the text either way, and only the
+  // The pipeline moves. Not optimistic: the event and the new status are
+  // written in one transaction in Rust, and the column only changes once
+  // that has committed. It's a local SQLite write, so there's no visible
+  // wait.
+  async function move(call: (id: number) => Promise<Application>, app: Application) {
+    try {
+      replaceApp(await call(app.id))
+    } catch (e) {
+      setNotice(String(e))
+    }
+  }
+
+  async function addApplication(company: string, title: string, appliedOn: string) {
+    const app = await api.addApplication(company, title, appliedOn || null)
+    setApps((all) => [app, ...all])
+  }
+
+  // Not optimistic: the record keeps the text either way, and only the
   // stored copy changes here, once the DB has it. Errors go back to the
-  // drawer (which shows them by the textarea) rather than to `notice`,
-  // which is hidden behind the drawer.
-  async function saveNotes(job: Job, body: string) {
-    await api.saveNotes(job.id, body)
-    patchJob(job.id, { notes: body.trim() || null })
+  // record (which shows them by the textarea) rather than to `notice`,
+  // which is hidden behind it. With a posting, the note lives wherever
+  // `jobs::save_notes` keeps it; without one, on the application.
+  async function saveRecordNotes(job: Job | null, app: Application | null, body: string) {
+    const notes = body.trim() || null
+    if (job) {
+      await api.saveNotes(job.id, body)
+      patchJob(job.id, { notes })
+    } else if (app) {
+      await api.saveApplicationNotes(app.id, body)
+    }
+    if (app) setApps((all) => all.map((a) => (a.id === app.id ? { ...a, notes } : a)))
   }
 
   async function open(job: Job) {
@@ -200,6 +266,33 @@ export default function App() {
 
   const current = PAGES.find((p) => p.page === page)!
 
+  const noticeLine = notice && (
+    <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
+      <span>{notice}</span>
+      <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
+        [ dismiss ]
+      </button>
+    </div>
+  )
+
+  // Pipeline hero: per-stage counts as the subtitle, and the left stripe
+  // split in proportion to them (closed in the rule colour).
+  const tally = stageCounts(apps)
+  const pipelineHero = {
+    subtitle: (
+      <span>
+        {tally.map((c, i) => (
+          <span key={c.key}>
+            <span className="text-text">{c.n}</span> {c.key}
+            {i < tally.length - 1 && <span className="text-text-dim"> · </span>}
+          </span>
+        ))}
+      </span>
+    ),
+    stripe: tally.map((c) => ({ key: c.key, color: STRIPE_COLORS[c.key], n: c.n })),
+    aside: <span className="shrink-0 text-meta text-text-muted">{apps.length} tracked</span>,
+  }
+
   return (
     // A full-height column: the strip and header keep their natural height
     // and are always visible; <main> takes the rest (`flex-1`) and scrolls
@@ -227,8 +320,12 @@ export default function App() {
           <RevealProvider>
             <Hero
               title={current.title}
-              subtitle={current.subtitle}
+              subtitle={page === 'pipeline' && load.kind === 'ready' ? pipelineHero.subtitle : current.subtitle}
+              stripe={page === 'pipeline' && apps.length > 0 ? pipelineHero.stripe : undefined}
               aside={
+                page === 'pipeline' ? (
+                  load.kind === 'ready' && pipelineHero.aside
+                ) : 
                 page === 'jobs' && (
                   <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
                     {load.kind === 'ready' && (
@@ -268,14 +365,7 @@ export default function App() {
                     onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
                     onExpandAll={() => setCollapsed(new Set())}
                   />
-                  {notice && (
-                    <div className="flex justify-between border-t border-rule px-6 py-1.5 text-meta text-text-muted">
-                      <span>{notice}</span>
-                      <button type="button" onClick={() => setNotice(null)} className="cursor-pointer hover:text-text">
-                        [ dismiss ]
-                      </button>
-                    </div>
-                  )}
+                  {noticeLine}
                 </div>
 
                 {load.kind === 'loading' && <Message>loading postings…</Message>}
@@ -318,11 +408,33 @@ export default function App() {
                       view={view}
                       collapsed={collapsed.has(g.city)}
                       onToggle={toggleCity}
-                      onSelect={(job) => setSelectedId(job.id)}
+                      onSelect={(job) => setRecord({ jobId: job.id, appId: null, from: 'jobs', tab: 'posting' })}
                       onOpen={open}
                     />
                   ))}
                 </div>
+              </>
+            ) : page === 'pipeline' ? (
+              <>
+                {load.kind === 'loading' && <Message>loading applications…</Message>}
+                {load.kind === 'error' && (
+                  <Message>
+                    could not load applications: {load.message}{' '}
+                    <button type="button" onClick={retry} className="cursor-pointer text-text hover:underline">
+                      [ retry ]
+                    </button>
+                  </Message>
+                )}
+                {load.kind === 'ready' && (
+                  <Pipeline
+                    apps={apps}
+                    selectedId={recordApp?.id ?? null}
+                    notice={noticeLine}
+                    onSelect={(app) => setRecord({ jobId: app.job_id, appId: app.id, from: 'pipeline', tab: 'application' })}
+                    onAdvance={(app) => move(api.advanceStage, app)}
+                    onAdd={addApplication}
+                  />
+                )}
               </>
             ) : (
               <Placeholder what={current.title} />
@@ -333,17 +445,24 @@ export default function App() {
         </div>
       </main>
 
-      {selected && (
-        <JobDetail
-          // A different posting gets a fresh drawer (and slide-in).
-          key={selected.id}
-          job={selected}
-          onClose={() => setSelectedId(null)}
+      {record && (recordJob || recordApp) && (
+        <Record
+          // A different record gets a fresh panel (and slide-in). Keyed by
+          // what it was opened on, so marking applied (which adds an
+          // application to the same record) doesn't remount it.
+          key={`${record.from}:${record.jobId ?? `a${record.appId}`}`}
+          job={recordJob}
+          app={recordApp}
+          from={record.from}
+          initialTab={record.tab}
+          onClose={closeRecord}
           onOpen={open}
           onMarkApplied={markApplied}
-          onUndo={undo}
-          onViewPipeline={viewPipeline}
-          onSaveNotes={saveNotes}
+          onUnapply={unapply}
+          onAdvance={(app) => move(api.advanceStage, app)}
+          onReject={(app) => move(api.markRejected, app)}
+          onUndoEvent={(app) => move(api.undoEvent, app)}
+          onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
         />
       )}
     </div>

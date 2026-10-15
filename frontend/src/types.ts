@@ -47,3 +47,31 @@ export type Filters = {
 // The four status colours, shared by the stripe, the diamond and the flag
 // squares. Matches the `data-color` selectors in index.css.
 export type StatusColor = 'green' | 'pink' | 'blue' | 'sand'
+
+// Pipeline stages. The first four are open, in order; the last two close an
+// application. Same values as the CHECK constraints in 0001_init.sql.
+export type Stage = 'applied' | 'assessment' | 'interview' | 'offer'
+export type AppStatus = Stage | 'rejected' | 'withdrawn'
+
+// Mirrors `applications::EventRow` in src-tauri/src/applications.rs.
+export type AppEvent = {
+  id: number
+  application_id: number
+  type: AppStatus
+  occurred_at: string // full ISO timestamp, UTC
+  origin: 'manual' | 'email'
+  note: string | null
+}
+
+// Mirrors `applications::ApplicationRow`.
+export type Application = {
+  id: number
+  job_id: number | null // null: added by hand, the scheduler never found it
+  company: string
+  title: string
+  status: AppStatus
+  applied_at: string | null // full ISO timestamp, UTC
+  stage_since: string | null // when the latest event happened
+  notes: string | null
+  events: AppEvent[] // oldest first
+}

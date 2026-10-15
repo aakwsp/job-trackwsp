@@ -40,6 +40,11 @@ pub enum JobsError {
     ApplicationInProgress(String),
     BadUrl(String),
     Open(String),
+    /// No application with this id.
+    NotFound(i64),
+    /// A pipeline move that doesn't apply from the current state (next stage
+    /// after an offer, rejecting something already closed, ...).
+    BadTransition(String),
 }
 
 impl std::fmt::Display for JobsError {
@@ -52,6 +57,8 @@ impl std::fmt::Display for JobsError {
             ),
             JobsError::BadUrl(u) => write!(f, "refusing to open non-http(s) url: {u}"),
             JobsError::Open(e) => write!(f, "could not open browser: {e}"),
+            JobsError::NotFound(id) => write!(f, "no application with id {id}"),
+            JobsError::BadTransition(why) => write!(f, "{why}"),
         }
     }
 }
