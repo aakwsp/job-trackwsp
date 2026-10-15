@@ -28,6 +28,7 @@
 
   /* tracker additions */
   --bg-hover:   #18161c;  /* row/cell hover */
+  --bg-active:  #1f1c24;  /* hovered / selected row in INBOX (from the boards) */
   --rule-strong:#2e2a36;  /* section bands */
 
   /* status colours — stripe, diamond and flag squares */
@@ -42,6 +43,7 @@
   --color-bg:            var(--bg);
   --color-bg-card:       var(--bg-card);
   --color-bg-hover:      var(--bg-hover);
+  --color-bg-active:     var(--bg-active);
   --color-text:          var(--text);
   --color-text-muted:    var(--text-muted);
   --color-text-dim:      var(--text-dim);

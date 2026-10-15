@@ -100,3 +100,76 @@ export type MailStatus = {
   extract_error: string | null // why the last LLM run stopped early (bad key, ...)
   needs_key: boolean // no Gemini API key stored yet
 }
+
+// ── INBOX (JT-18). Mirrors src-tauri/src/inbox.rs. ──────────────────────
+
+export type InboxStatus = 'pending' | 'extracted' | 'checking' | 'auto' | 'confirmed' | 'rejected'
+
+export type InboxRow = {
+  id: number
+  status: InboxStatus
+  company: string | null
+  event_type: string | null
+  score: number | null // routing score (JT-16), not Gemini's confidence
+  subject: string | null
+  received_at: string | null
+  read: boolean
+  application_id: number | null
+}
+
+export type IgnoredRow = {
+  id: number
+  gmail_id: string
+  from_addr: string | null
+  subject: string | null
+  received_at: string | null
+  filter_reason: string | null
+}
+
+export type AppRef = { id: number; company: string; title: string; status: string }
+
+export type InboxDetail = {
+  email: {
+    id: number
+    gmail_id: string
+    thread_id: string | null
+    status: InboxStatus
+    from_addr: string | null
+    subject: string | null
+    received_at: string | null
+    body_text: string | null // plain text only; never rendered as HTML
+    read: boolean
+    extract_error: string | null
+  }
+  extraction: {
+    id: number
+    company: string | null
+    role: string | null
+    req_id: string | null
+    event_type: string
+    occurred_at: string | null
+    confidence: number | null // Gemini's
+    field_confidence: string | null // JSON object
+  } | null
+  match: {
+    application: AppRef | null
+    candidates: AppRef[]
+    suggested_job: { id: number; company: string; title: string } | null
+    score: number
+    reasons: string[]
+    action: string // write_event:<type> | attach_event | attach | none
+    note: string | null
+    wrote_event: boolean
+  } | null
+  applications: AppRef[]
+}
+
+// Corrections for routing::edit (JT-16). Omitted = unchanged.
+export type RouteEdit = {
+  company?: string
+  role?: string
+  req_id?: string
+  event_type?: string
+  event_date?: string
+  application_id?: number
+}

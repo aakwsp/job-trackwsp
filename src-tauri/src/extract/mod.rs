@@ -370,9 +370,16 @@ fn call_with_retry(client: &dyn LlmClient, model: &str, out: &Outgoing, schema: 
 /// job_alert / not_job answer ignores the email and clears its content.
 /// Returns whether the email was ignored.
 fn store(pool: &SqlitePool, email_id: i64, model: &str, raw: &str, x: &Extraction) -> Result<bool, sqlx::Error> {
-    let ignored = IGNORED_TYPES.contains(&x.event_type.as_str());
     block_on(async {
         let mut tx = pool.begin().await?;
+        // An email the user put back from the ignored list ([ not ignored ],
+        // JT-18) stays in the inbox even if the model calls it a job alert
+        // or not job-related again: the user has already overruled that.
+        let restored: bool = sqlx::query_scalar("SELECT COALESCE(filter_reason = 'restored by you', 0) FROM emails WHERE id = ?")
+            .bind(email_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let ignored = IGNORED_TYPES.contains(&x.event_type.as_str()) && !restored;
         sqlx::query(
             "INSERT INTO extractions (email_id, company, role, req_id, event_type, occurred_at,
                                       confidence, field_confidence, model, raw_response)
@@ -608,6 +615,21 @@ mod tests {
         assert!(fields.contains("\"req_id\":0.8"));
         assert_eq!(raw, ANSWER); // stored exactly as returned
 
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restored_mail_stays_in_the_inbox() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).expect("connect");
+        let id = insert(&pool, "r", "pending", "x@example.com", "body");
+        block_on(sqlx::query("UPDATE emails SET filter_reason = 'restored by you' WHERE id = ?").bind(id).execute(&pool)).unwrap();
+        let alert = Mock::answering(&ANSWER.replace("\"interview\"", "\"job_alert\""));
+        let counts = run_with(&pool, &alert, "m", &no_sleep()).unwrap();
+        assert_eq!(counts, RunCounts { extracted: 1, ignored: 0, failed: 0 });
+        let status: String = block_on(sqlx::query_scalar("SELECT status FROM emails WHERE id = ?").bind(id).fetch_one(&pool)).unwrap();
+        assert_eq!(status, "extracted");
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }

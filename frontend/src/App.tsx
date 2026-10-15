@@ -25,6 +25,8 @@ import {
   MailStatusLine,
 } from './components/GmailConnection'
 import { useMail } from './lib/useMail'
+import { useInbox } from './lib/useInbox'
+import Inbox from './components/inbox/Inbox'
 import { useGmail } from './lib/useGmail'
 import { PAGES, type Page } from './lib/page'
 import RevealProvider from './components/RevealProvider'
@@ -88,9 +90,11 @@ export default function App() {
   const [page, setPage] = useState<Page>('jobs')
   // The job account's Gmail connection, shown on QUEUE (JT-13). Checked
   // each time QUEUE opens.
-  const gmail = useGmail(page === 'queue')
+  const gmail = useGmail(page === 'inbox')
   // The mail poller's status line, only meaningful once connected.
-  const mail = useMail(page === 'queue' && gmail.status.kind === 'connected')
+  const mail = useMail(page === 'inbox' && gmail.status.kind === 'connected')
+  // INBOX's lists and detail (JT-18).
+  const inbox = useInbox(page === 'inbox')
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
@@ -581,7 +585,7 @@ export default function App() {
               subtitle={
                 page === 'pipeline' && load.kind === 'ready' ? (
                   pipelineHero.subtitle
-                ) : page === 'queue' ? (
+                ) : page === 'inbox' ? (
                   <>
                     {gmail.status.kind === 'connected' && (
                       <span className="block">
@@ -613,7 +617,7 @@ export default function App() {
               aside={
                 page === 'pipeline' ? (
                   load.kind === 'ready' && pipelineHero.aside
-                ) : page === 'queue' ? (
+                ) : page === 'inbox' ? (
                   gmail.status.kind === 'connected' && <CheckMailButton busy={mail.busy} onCheck={mail.check} />
                 ) : 
                 page === 'jobs' && (
@@ -730,8 +734,11 @@ export default function App() {
               </>
             ) : (
               <>
-                {page === 'queue' && <GmailConnectBlock {...gmailProps} />}
-                <Placeholder what={current.title} />
+                {page === 'inbox' ? (
+                  <Inbox inbox={inbox} top={<GmailConnectBlock {...gmailProps} />} />
+                ) : (
+                  <Placeholder what={current.title} />
+                )}
               </>
             )}
 

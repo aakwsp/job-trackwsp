@@ -1,5 +1,14 @@
 import { invoke } from '@tauri-apps/api/core'
-import type { Application, Job, MailStatus, SyncCounts } from './types'
+import type {
+  Application,
+  IgnoredRow,
+  InboxDetail,
+  InboxRow,
+  Job,
+  MailStatus,
+  RouteEdit,
+  SyncCounts,
+} from './types'
 
 // Thin typed wrappers around the Tauri commands registered in
 // src-tauri/src/lib.rs. Argument keys are camelCase here: Tauri converts
@@ -58,3 +67,20 @@ export const mailCheck = () => invoke<MailStatus>('mail_check')
 export const llmSaveKey = (key: string) => invoke<void>('llm_save_key', { key })
 
 export const llmGetKey = () => invoke<string | null>('llm_get_key')
+
+// ── INBOX (JT-18) ────────────────────────────────────────────────────────
+// Lists and detail come from Rust; every action is a routing command
+// (JT-16), so React never decides anything about the pipeline itself.
+export const inboxList = () => invoke<InboxRow[]>('inbox_list')
+export const inboxIgnored = () => invoke<IgnoredRow[]>('inbox_ignored')
+export const inboxDetail = (emailId: number) => invoke<InboxDetail | null>('inbox_detail', { emailId })
+export const inboxSetRead = (emailId: number, read: boolean) => invoke<void>('inbox_set_read', { emailId, read })
+export const inboxOpenInGmail = (emailId: number) => invoke<void>('inbox_open_in_gmail', { emailId })
+
+export const routeConfirm = (emailId: number, applicationId: number | null, createFromJob: number | null) =>
+  invoke<void>('route_confirm', { emailId, applicationId, createFromJob })
+export const routeReject = (emailId: number) => invoke<void>('route_reject', { emailId })
+export const routeEdit = (emailId: number, edit: RouteEdit) => invoke<unknown>('route_edit', { emailId, edit })
+export const routeUndo = (emailId: number) => invoke<void>('route_undo', { emailId })
+// [ not ignored ]: re-fetches the email from Gmail and re-parses it.
+export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
