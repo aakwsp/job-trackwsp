@@ -123,6 +123,19 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
 /// `job_id`. Idempotent in both directions. The posting's note moves with it:
 /// into `applications.notes` on apply, back to `job_notes` on undo.
 pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Result<(), JobsError> {
+    set_applied_at(pool, job_id, applied, None).await
+}
+
+/// `set_applied`, with the applied date given (a full ISO timestamp)
+/// instead of now: for recording an application after the fact, dated when
+/// it really happened (e.g. the confirmation email's date). Same
+/// transaction, same note handling, one `applied` event at that time.
+pub async fn set_applied_at(
+    pool: &SqlitePool,
+    job_id: i64,
+    applied: bool,
+    applied_at: Option<&str>,
+) -> Result<(), JobsError> {
     let mut tx = pool.begin().await?;
 
     let existing: Option<(i64, String)> =
@@ -135,11 +148,12 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
         (true, None) => {
             let app_id: i64 = sqlx::query_scalar(
                 "INSERT INTO applications (job_id, status, applied_at, notes)
-                 VALUES (?, 'applied', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'),
+                 VALUES (?, 'applied', COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
                          (SELECT body FROM job_notes WHERE job_id = ?))
                  RETURNING id",
             )
             .bind(job_id)
+            .bind(applied_at)
             .bind(job_id)
             .fetch_one(&mut *tx)
             .await?;
@@ -151,9 +165,10 @@ pub async fn set_applied(pool: &SqlitePool, job_id: i64, applied: bool) -> Resul
             // application starts with the event that put it there.
             sqlx::query(
                 "INSERT INTO application_events (application_id, type, occurred_at, origin)
-                 VALUES (?, 'applied', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), 'manual')",
+                 VALUES (?, 'applied', COALESCE(?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now')), 'manual')",
             )
             .bind(app_id)
+            .bind(applied_at)
             .execute(&mut *tx)
             .await?;
         }
@@ -423,6 +438,50 @@ mod tests {
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_applied_at_dates_the_application_and_its_event() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            sqlx::query("INSERT INTO jobs (job_key, company, title, triple) VALUES ('k', 'co', 't', 'k')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            let id = list(&pool).await.unwrap()[0].id;
+            set_applied_at(&pool, id, true, Some("2026-09-17T14:02:00Z")).await.unwrap();
+            assert_eq!(list(&pool).await.unwrap()[0].applied_at.as_deref(), Some("2026-09-17T14:02:00Z"));
+            let at: String = sqlx::query_scalar("SELECT occurred_at FROM application_events").fetch_one(&pool).await.unwrap();
+            assert_eq!(at, "2026-09-17T14:02:00Z");
+        });
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One-off: record an application on the real database, dated in the
+    /// past. Not run by default:
+    ///   JT_DB_DIR=~/.local/share/xyz.aakwsp.job-trackwsp JT_JOB_ID=38 JT_APPLIED_AT=2026-09-17T..Z \
+    ///     cargo test --lib jobs::tests::record_past_application -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn record_past_application() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let job: i64 = std::env::var("JT_JOB_ID").expect("JT_JOB_ID").parse().unwrap();
+        let at = std::env::var("JT_APPLIED_AT").expect("JT_APPLIED_AT");
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            set_applied_at(&pool, job, true, Some(&at)).await.unwrap();
+            let row: (i64, String, String) = sqlx::query_as(
+                "SELECT a.id, a.status, e.occurred_at FROM applications a
+                 JOIN application_events e ON e.application_id = a.id WHERE a.job_id = ?",
+            )
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            println!("application {} on job {job}: {} at {}", row.0, row.1, row.2);
+        });
     }
 
     #[test]

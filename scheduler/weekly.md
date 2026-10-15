@@ -78,7 +78,7 @@ POST to `{URL}` with header `Content-Type: application/json` and body:
 
 Include every in-scope posting you confirmed this run, both new and known. Send batches of at most 50. Fields:
 - company, title, city: strings
-- req_id: string, or ""
+- req_id: string, or "". req_id is the Job ID / Req ID shown on the posting page, never a number taken from the URL. Career sites like Eightfold (Microsoft, Qualcomm) put an internal page ID in the URL that is not the job number; leave req_id "" rather than use it.
 - url: direct link to the company posting, or ""
 - deadline: "YYYY-MM-DD", or ""
 - posting_status: "open", "closing" (deadline within 14 days), or "closed" (only if you confirmed a known posting was taken down)
