@@ -31,6 +31,11 @@ src-tauri/             Rust core
   `oauth2` for the Gmail loopback flow.
 - The frontend calls Rust through Tauri commands (`invoke`). There is no HTTP
   server and no REST API.
+- A command declared as a plain `fn` runs on the **main thread** and freezes
+  the window until it returns. Anything that can be slow (network, waiting on
+  the browser) must be an `async fn` that runs its blocking work through
+  `off_main_thread` (`spawn_blocking`) in `lib.rs`. Quick SQLx-only commands
+  are `async fn` already.
 
 ## Identity and deduplication (important)
 
@@ -68,6 +73,8 @@ insert a new row.
   Nothing changes an application until the user confirms.
 - `application_events` — the per-application timeline; the latest event
   determines `applications.status`.
+- `settings` — small non-secret app values. `gmail_address` is the connected
+  job account, which is also the keyring user its token is stored under.
 
 Timestamps are ISO-8601 text (`YYYY-MM-DD` for sheet dates, full
 `YYYY-MM-DDTHH:MM:SSZ` for anything the app records). SQLite has no date type
@@ -106,6 +113,15 @@ lowercase, hairline dividers, zero border radius anywhere, no shadows.
 - Secrets live in `.env` (gitignored). `.env.example` lists the keys with empty
   values. Never commit a token; never paste one into `scheduler/*.md`, which
   keep `{URL}` / `{TOKEN}` placeholders.
+- Gmail (JT-13, `src-tauri/src/gmail/`): the OAuth client is the Desktop app
+  client JSON at `~/.config/job-trackwsp/client_secret.json` (Tauri's
+  `config_dir()` + `job-trackwsp`), read at runtime and never copied into the
+  repo. The refresh token lives only in the OS keyring (service
+  `job-trackwsp`, user = the connected address); the access token stays in
+  memory. Tokens are never logged or written to a file or the DB.
+- **A Secret Service keyring is required** (gnome-keyring, or KeePassXC with
+  Secret Service enabled). Without one, connecting fails with a clear error;
+  there is deliberately no file fallback. Scope is `gmail.readonly` only.
 - Branches are named `moshi/jt-<n>`. Work is tracked in Linear (team key
   `JT`).
 - Commit messages and PR titles use `moshi/jt-<n>: <lowercase summary>`,
