@@ -17,7 +17,7 @@ type Props = {
 export default function JobCard({ job, compact, onSelect, onOpen }: Props) {
   // Rises in the first time it scrolls into view (lib/reveal.tsx). Keyed by
   // job id, so DEFAULT and COMPACT share the "already revealed" memory.
-  const reveal = useReveal(`job:${job.id}`)
+  const { ref: revealRef, className: revealClass } = useReveal(`job:${job.id}`)
   return (
     // `.card` (index.css) owns the shared hairlines, the 3px stripe picked
     // by `data-color`, and the dimming for `data-applied`. `flex-col` +
@@ -25,8 +25,8 @@ export default function JobCard({ job, compact, onSelect, onOpen }: Props) {
     // (which stretch to equal height) line their meta lines up.
     <article
       {...clickable(() => onSelect(job))}
-      {...reveal}
-      className={`card rise flex cursor-pointer flex-col pr-5 pl-6 ${compact ? 'pt-3.5 pb-3' : 'pt-5 pb-4'}`}
+      ref={revealRef}
+      className={`card rise ${revealClass} flex cursor-pointer flex-col pr-5 pl-6 ${compact ? 'pt-3.5 pb-3' : 'pt-5 pb-4'}`}
       data-color={stripeColor(job)}
       data-applied={job.applied}
     >

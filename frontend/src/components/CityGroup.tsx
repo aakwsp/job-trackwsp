@@ -23,9 +23,10 @@ export default function CityGroup({
   onSelect,
   onOpen,
 }: Props) {
-  // The band rises in like the cards. The first one on screen rides in just
-  // after the hero and toolbar (see PAGE_ENTRY_DELAY_MS in lib/reveal).
-  const reveal = useReveal(`band:${city}`)
+  // The band rises in like the cards (not in LINE, which never animates).
+  // The first one on screen rides in just after the hero and toolbar (see
+  // PAGE_ENTRY_DELAY_MS in lib/reveal).
+  const { ref: revealRef, className: revealClass } = useReveal(`band:${city}`, view !== 'line')
   return (
     <section>
       {/* The band is the collapse control: a <button> so it gets keyboard
@@ -40,8 +41,8 @@ export default function CityGroup({
         type="button"
         onClick={() => onToggle(city)}
         aria-expanded={!collapsed}
-        {...reveal}
-        className="band rise sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text"
+        ref={revealRef}
+        className={`band rise ${revealClass} sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text`}
       >
         <span>
           {collapsed ? '+ ' : '- '}// {city.toLowerCase()}

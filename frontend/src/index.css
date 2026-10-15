@@ -127,12 +127,10 @@
   position: relative;
   border-right: 1px solid var(--rule);
   border-bottom: 1px solid var(--rule);
-  /* Marking applied: the stripe turns green first (::before, below), then
-     the card settles into its dimmed applied look — hence the delay on
-     opacity, so the two read as one step after the other. */
-  transition:
-    background 0.12s ease,
-    opacity var(--motion) var(--ease) var(--motion);
+  /* No opacity transition on the card itself: its opacity belongs to the
+     scroll reveal (`.rise`), and a transition here would make every reveal
+     wait and fade — which is what left rows blank while scrolling. */
+  transition: background 0.12s ease;
 }
 .card:hover { background: var(--bg-hover); }
 
@@ -149,7 +147,12 @@
   background: transparent;
   transition: background-color var(--motion) var(--ease);
 }
-.card[data-applied="true"] { opacity: 0.55; }
+/* Marking applied: the stripe turns green first (::before, above), then the
+   card's content settles into its dimmed look — hence the delay, so the two
+   read as one step after the other. The dim is on the children, not the
+   card, for the reason in `.card`; the stripe stays full green. */
+.card > * { transition: opacity var(--motion) var(--ease) var(--motion); }
+.card[data-applied="true"] > * { opacity: 0.55; }
 
 /* status diamond: a 10px square turned 45deg, ~14px tip to tip (rem, so
    it scales with the text). Drawn in CSS rather than with the ◆ character
@@ -345,20 +348,21 @@
   animation: rise var(--enter-ms) var(--ease-expo) var(--d, 0ms) backwards;
 }
 
-/* `.rise` is for bands, cards and rows, driven by lib/reveal.tsx:
-   - waiting (neither attribute): hidden at the starting frame
-   - `data-shown`, set by the observer as it scrolls in: plays the rise,
-     with `--rise-delay` staggering a batch
-   - `data-revealed`, set by React when it already revealed earlier this
-     visit (e.g. after a DEFAULT / COMPACT / LINE switch): just shown
+/* `.rise` is for bands and cards (not LINE rows), driven by lib/reveal.ts:
+   - `.rise` alone: waiting, hidden at the starting frame
+   - `.is-in`: shown. Alone (fast scrolling, or already revealed earlier
+     this visit) it just appears.
+   - `.is-rising`: also plays the rise, with `--rise-delay` staggering a
+     batch. JS sets `will-change` for exactly this long and clears it on
+     `animationend`, so no card keeps a compositing layer afterwards.
    An animation rather than a transition on purpose: cards already use
    `transition` (hover, applied fade) and `opacity` (applied dim), and with
    `backwards` fill the animation lets go of both once it ends. */
-.rise:not([data-shown]):not([data-revealed]) {
+.rise:not(.is-in) {
   opacity: 0;
   transform: translateY(12px);
 }
-.rise[data-shown] {
+.rise.is-rising {
   animation: rise var(--rise-ms) var(--ease-expo) var(--rise-delay, 0ms) backwards;
 }
 

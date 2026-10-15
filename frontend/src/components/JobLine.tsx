@@ -2,7 +2,6 @@ import type { Job } from '../types'
 import { LINE_TITLE_MAX, clipTitle, dateText, stripeColor } from '../lib/jobs'
 import { Labels } from './MetaLine'
 import { clickable } from './clickable'
-import { useReveal } from '../lib/reveal'
 import StatusMarks from './StatusMarks'
 
 type Props = {
@@ -11,16 +10,13 @@ type Props = {
   onOpen: (job: Job) => void
 }
 
-// LINE view: one posting per row. Same `.card` class as the card views, so
+// LINE view: one posting per row. No scroll reveal: rows appear at once. Same `.card` class as the card views, so
 // the stripe, hover highlight and applied dimming match.
 export default function JobLine({ job, onSelect, onOpen }: Props) {
-  // Same id as JobCard: a posting revealed as a card doesn't replay as a row.
-  const reveal = useReveal(`job:${job.id}`)
   return (
     <div
       {...clickable(() => onSelect(job))}
-      {...reveal}
-      className="card rise flex cursor-pointer items-center gap-4 py-2 pr-5 pl-6"
+      className="card flex cursor-pointer items-center gap-4 py-2 pr-5 pl-6"
       data-color={stripeColor(job)}
       data-applied={job.applied}
     >
