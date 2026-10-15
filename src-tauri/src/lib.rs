@@ -620,6 +620,23 @@ async fn inbox_open_in_gmail(app: tauri::AppHandle, email_id: i64) -> Result<(),
     .await
 }
 
+/// INBOX's by-job list: applications with matched emails.
+#[tauri::command]
+async fn inbox_jobs(app: tauri::AppHandle) -> Result<Vec<inbox::JobRow>, String> {
+    off_main_thread(app, |app| inbox::jobs(&app.state::<SqlitePool>()).map_err(|e| e.to_string()), |e| e).await
+}
+
+/// One application's email timeline, oldest first (the record's emails tab).
+#[tauri::command]
+async fn app_emails(app: tauri::AppHandle, application_id: i64) -> Result<Vec<inbox::TimelineNode>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::timeline(&app.state::<SqlitePool>(), application_id).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
+}
+
 /// Opens a posting in the system browser. Done from Rust rather than
 /// exposing the opener plugin to the frontend, so the http(s) check can't be
 /// bypassed and no capability has to be granted to the webview.
@@ -695,7 +712,9 @@ pub fn run() {
             inbox_ignored,
             inbox_detail,
             inbox_set_read,
-            inbox_open_in_gmail
+            inbox_open_in_gmail,
+            inbox_jobs,
+            app_emails
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

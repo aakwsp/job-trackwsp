@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import * as api from '../../api'
-import type { IgnoredRow, InboxRow } from '../../types'
+import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
 import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
@@ -16,7 +16,14 @@ type Props = {
   top?: ReactNode
 }
 
+type Mode = 'email' | 'job'
+type JobSort = 'activity' | 'company'
+
 export default function Inbox({ inbox, top }: Props) {
+  // `g` toggles by email / by job.
+  const [mode, setMode] = useState<Mode>('email')
+  const [jobSort, setJobSort] = useState<JobSort>('activity')
+  const [jobId, setJobId] = useState<number | null>(null)
   const [sort, setSort] = useState<MailSort>('newest')
   const [showIgnored, setShowIgnored] = useState(false)
   // Memoized: `?? []` alone would be a new array every render while
@@ -35,22 +42,38 @@ export default function Inbox({ inbox, top }: Props) {
     if (first) open(first.id, false)
   }, [rows, openId, checking, all, open])
 
-  // `m` toggles the open email's read state. A ref keeps the handler
-  // reading the current row without re-subscribing on every render.
+  // Opening a job opens its newest email (the board's default).
+  async function openJob(id: number) {
+    setJobId(id)
+    const nodes = await api.appEmails(id)
+    const last = nodes[nodes.length - 1]
+    if (last) open(last.email_id)
+  }
+
+  // Keys: `m` read/unread, `g` by email / by job, ←/→ along the open
+  // email's timeline. A ref keeps the handler reading current values
+  // without re-subscribing every render.
   const current = rows.find((r) => r.id === openId)
-  const currentRef = useRef(current)
+  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId })
   useEffect(() => {
-    currentRef.current = current
+    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      const r = currentRef.current
+      const { current: r, timeline, openId: id } = keyState.current
       if (e.key === 'm' && r) {
-        e.preventDefault()
         inbox.act(() => api.inboxSetRead(r.id, !r.read))
-      }
+      } else if (e.key === 'g') {
+        setMode((m) => (m === 'email' ? 'job' : 'email'))
+      } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && timeline.length > 0) {
+        const i = timeline.findIndex((n) => n.email_id === id)
+        const next = timeline[i + (e.key === 'ArrowRight' ? 1 : -1)]
+        if (!next) return
+        inbox.open(next.email_id)
+      } else return
+      e.preventDefault()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -59,8 +82,12 @@ export default function Inbox({ inbox, top }: Props) {
   return (
     <div className="grid grid-cols-1 border-t border-rule-strong border-b border-b-rule min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
       <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
-        <Toolbar sort={sort} onSort={setSort} />
+        <Toolbar mode={mode} onMode={setMode} sort={sort} onSort={setSort} jobSort={jobSort} onJobSort={setJobSort} />
         {top}
+        {mode === 'job' ? (
+          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} />
+        ) : (
+          <>
         {checking.length > 0 && (
           <>
             <Band count={checking.length}>// checking</Band>
@@ -77,6 +104,8 @@ export default function Inbox({ inbox, top }: Props) {
           onToggle={() => setShowIgnored((x) => !x)}
           onRestore={(r) => inbox.act(() => api.mailRestore(r.gmail_id))}
         />
+          </>
+        )}
       </section>
 
       {/* `self-start` + `sticky top-0`: the pane stays in view while the
@@ -85,7 +114,7 @@ export default function Inbox({ inbox, top }: Props) {
       <section aria-label="detail" className="sticky top-0 flex max-h-[calc(100vh-4.5rem)] min-w-0 flex-col self-start overflow-y-auto">
         {inbox.error && <p className="border-b border-rule px-8 py-2 text-meta text-pink">{inbox.error}</p>}
         {inbox.detail ? (
-          <InboxDetailPane detail={inbox.detail} act={inbox.act} />
+          <InboxDetailPane detail={inbox.detail} act={inbox.act} large={mode === 'job'} onOpenEmail={(id) => open(id)} />
         ) : (
           <p className="px-8 py-10 text-meta text-text-dim">{inbox.rows ? 'no mail yet.' : 'loading…'}</p>
         )}
@@ -94,20 +123,100 @@ export default function Inbox({ inbox, top }: Props) {
   )
 }
 
-// The toolbar row above the list: view mode and sort. The board's
-// [ by email ] / [ by job ] come with the job view (stage 2).
-function Toolbar({ sort, onSort }: { sort: MailSort; onSort: (s: MailSort) => void }) {
-  const sorts: MailSort[] = ['newest', 'company', 'score']
+// The toolbar row above the list: view mode, then that mode's sorts.
+function Toolbar(props: {
+  mode: Mode
+  onMode: (m: Mode) => void
+  sort: MailSort
+  onSort: (s: MailSort) => void
+  jobSort: JobSort
+  onJobSort: (s: JobSort) => void
+}) {
+  const { mode, onMode } = props
   return (
     <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-rule pr-5 pl-[1.125rem] whitespace-nowrap">
-      <Seg on>[ by email ]</Seg>
+      <Seg on={mode === 'email'} onClick={() => onMode('email')}>
+        [ by email ]
+      </Seg>
+      <Seg on={mode === 'job'} onClick={() => onMode('job')}>
+        [ by job ]
+      </Seg>
       <span className="ml-auto pr-0.5 text-[0.65625rem] text-text-dim">sort</span>
-      {sorts.map((s) => (
-        <Seg key={s} on={sort === s} dim onClick={() => onSort(s)}>
-          {s}
-        </Seg>
-      ))}
+      {mode === 'email'
+        ? (['newest', 'company', 'score'] as MailSort[]).map((s) => (
+            <Seg key={s} on={props.sort === s} dim onClick={() => props.onSort(s)}>
+              {s}
+            </Seg>
+          ))
+        : (
+            [
+              ['activity', 'latest activity'],
+              ['company', 'company'],
+            ] as [JobSort, string][]
+          ).map(([s, label]) => (
+            <Seg key={s} on={props.jobSort === s} dim onClick={() => props.onJobSort(s)}>
+              {label}
+            </Seg>
+          ))}
     </div>
+  )
+}
+
+// By job: company → its applications (role, stage, email count, unread),
+// as on the InboxByJob board.
+function JobList({
+  jobs,
+  sort,
+  currentId,
+  onOpen,
+}: {
+  jobs: InboxJob[]
+  sort: JobSort
+  currentId: number | null
+  onOpen: (applicationId: number) => void
+}) {
+  const companies = new Map<string, InboxJob[]>()
+  for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
+  const latest = (js: InboxJob[]) => js.map((j) => j.latest ?? '').sort().slice(-1)[0] ?? ''
+  const groups = [...companies].sort(([a, x], [b, y]) => (sort === 'company' ? a.localeCompare(b) : latest(y).localeCompare(latest(x))))
+  if (groups.length === 0) return <p className="px-6 py-6 text-meta text-text-dim">no emails matched to an application yet.</p>
+  return (
+    <>
+      {groups.map(([co, js]) => (
+        <div key={co} className="border-b border-rule">
+          <div className="pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05]">{co}</div>
+          <ul className="m-0 list-none p-0 pb-2">
+            {js.map((j) => {
+              const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
+              const current = j.application_id === currentId
+              return (
+                <li key={j.application_id}>
+                  <button
+                    type="button"
+                    onClick={() => onOpen(j.application_id)}
+                    aria-current={current || undefined}
+                    className={`block w-full cursor-pointer py-2 pr-5 pl-6 text-left hover:bg-bg-active ${
+                      current ? 'bg-bg-active outline outline-text -outline-offset-1' : ''
+                    }`}
+                  >
+                    <span className="flex items-baseline gap-3">
+                      <span className="min-w-0 flex-1 truncate text-meta">{j.title}</span>
+                      <span data-color={color ?? undefined} className={`text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
+                        {j.status}
+                      </span>
+                    </span>
+                    <span className="mt-1 block text-[0.65625rem] text-text-dim">
+                      {j.emails} {j.emails === 1 ? 'email' : 'emails'}
+                      {j.unread > 0 && <span className="text-text"> · {j.unread} unread</span>}
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ))}
+    </>
   )
 }
 

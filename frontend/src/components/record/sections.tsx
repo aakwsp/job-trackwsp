@@ -1,7 +1,8 @@
-import type { Application, Job, Stage } from '../../types'
+import type { Application, Job, Stage, TimelineNode } from '../../types'
 import { daysLeft, daysSince, isClosingSoon, isExpired, localYmd } from '../../lib/jobs'
 import { agoIso, recordTimeline, stageColor, stageTrack, type TimelineEntry } from '../../lib/applications'
 import type { Tab } from '../../lib/record'
+import EmailTimeline from '../inbox/EmailTimeline'
 import {
   Band,
   Dated,
@@ -33,6 +34,9 @@ export type RecordModel = {
   undo: () => void
   // Switches the record to another tab (the summary's "→" links).
   goTo: (tab: Tab) => void
+  // The application's emails (JT-18), oldest first; null while loading.
+  emails: TimelineNode[] | null
+  openEmail: (emailId: number) => void
   notes: {
     id: string
     value: string
@@ -593,6 +597,16 @@ export function ApplicationSection({ m, pad }: SectionProps) {
 
 export function EmailsSection({ m, pad }: SectionProps) {
   const company = m.job?.company ?? m.app?.company ?? 'them'
+  // The same timeline as INBOX's, large; a node opens that email there.
+  if (m.app && m.emails && m.emails.length > 0)
+    return (
+      <div>
+        <Band pad={pad} noTop aside={`${m.emails.length} ${m.emails.length === 1 ? 'email' : 'emails'} · opens in inbox`}>
+          <h3 className="font-mono">// timeline</h3>
+        </Band>
+        <EmailTimeline nodes={m.emails} large onPick={m.openEmail} />
+      </div>
+    )
   return (
     <Empty title="[ no emails yet ]" pad={pad}>
       parsed mail from {company.toLowerCase()} will land here, classified as it arrives.

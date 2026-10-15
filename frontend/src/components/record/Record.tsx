@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type TransitionEvent } from 'react'
-import type { Application, Job, StatusColor } from '../../types'
+import type { Application, Job, StatusColor, TimelineNode } from '../../types'
+import * as api from '../../api'
 import { activeFlags, labelsFor, statusInfo } from '../../lib/jobs'
 import { nextStage, stageColor } from '../../lib/applications'
 import { prefersReducedMotion } from '../../lib/motion'
@@ -31,6 +32,8 @@ type Props = {
   onStep: (app: Application, dir: 1 | -1) => void
   // Rejects with a message if the save failed.
   onSaveNotes: (body: string) => Promise<void>
+  // Emails tab: opens one in INBOX (JT-18).
+  onOpenEmail: (emailId: number) => void
 }
 
 // One record for a posting and/or its application, opened from JOBS (on the
@@ -60,11 +63,24 @@ export default function Record({
   onUndoEvent,
   onStep,
   onSaveNotes,
+  onOpenEmail,
 }: Props) {
   const panelRef = useRef<HTMLElement>(null)
   const [closing, setClosing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [tab, setTab] = useState<Tab>(initialTab)
+  // The application's emails for the emails tab (JT-18), oldest first.
+  // Fetched when the application changes; null until then.
+  const [emails, setEmails] = useState<TimelineNode[] | null>(null)
+  const appId = app?.id ?? null
+  useEffect(() => {
+    if (appId === null) return
+    let stale = false
+    api.appEmails(appId).then((n) => !stale && setEmails(n)).catch(() => !stale && setEmails([]))
+    return () => {
+      stale = true
+    }
+  }, [appId])
 
   // The textarea's text lives here, not in App, so typing doesn't touch
   // App's state on every keystroke. `saved` remembers what the DB has, so a
@@ -231,6 +247,8 @@ export default function Record({
     reject: () => app && onReject(app),
     undo,
     goTo: setTab,
+    emails,
+    openEmail: onOpenEmail,
     notes: { id: notesId, value: notes, error: notesError, onChange: setNotes, onBlur: saveNotes },
   }
 

@@ -3,11 +3,13 @@ import type {
   Application,
   IgnoredRow,
   InboxDetail,
+  InboxJob,
   InboxRow,
   Job,
   MailStatus,
   RouteEdit,
   SyncCounts,
+  TimelineNode,
 } from './types'
 
 // Thin typed wrappers around the Tauri commands registered in
@@ -84,3 +86,5 @@ export const routeEdit = (emailId: number, edit: RouteEdit) => invoke<unknown>('
 export const routeUndo = (emailId: number) => invoke<void>('route_undo', { emailId })
 // [ not ignored ]: re-fetches the email from Gmail and re-parses it.
 export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
+export const inboxJobs = () => invoke<InboxJob[]>('inbox_jobs')
+export const appEmails = (applicationId: number) => invoke<TimelineNode[]>('app_emails', { applicationId })

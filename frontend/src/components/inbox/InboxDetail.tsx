@@ -3,6 +3,7 @@ import * as api from '../../api'
 import type { InboxDetail, RouteEdit } from '../../types'
 import { eventColor, eventLabel, localDayTime } from '../../lib/inbox'
 import { outlineButton, primaryButton } from '../record/parts'
+import EmailTimeline from './EmailTimeline'
 
 // The open email (design/inbox/Inbox.dc.html, right column): // email,
 // // extracted, // match, // actions. The body is plain text in a
@@ -12,6 +13,9 @@ import { outlineButton, primaryButton } from '../record/parts'
 type Props = {
   detail: InboxDetail
   act: (fn: () => Promise<unknown>) => Promise<void>
+  // By-job view: the larger timeline with labels.
+  large: boolean
+  onOpenEmail: (emailId: number) => void
 }
 
 const STAGE_NAME: Record<string, string> = {
@@ -28,7 +32,7 @@ const TYPES = ['applied', 'assessment', 'interview', 'offer', 'rejection', 'foll
 /** Gemini's per-field confidence under this marks the field (pink square). */
 const LOW_FIELD = 0.8
 
-export default function InboxDetailPane({ detail, act }: Props) {
+export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Props) {
   const { email, extraction: x, match: m } = detail
   // Edit / change-match state remembers which email it belongs to, so
   // opening another email drops it without an effect to reset it.
@@ -78,7 +82,17 @@ export default function InboxDetailPane({ detail, act }: Props) {
 
   return (
     <>
-      <Band first>// email</Band>
+      {detail.timeline.length > 0 && (
+        <>
+          <Band first aside={`${(app?.company ?? '').toLowerCase()} · ${detail.timeline.length} ${detail.timeline.length === 1 ? 'email' : 'emails'}`}>
+            // timeline
+          </Band>
+          <EmailTimeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
+        </>
+      )}
+      <Band first={detail.timeline.length === 0} flush={detail.timeline.length > 0}>
+        // email
+      </Band>
       <div className="px-8 pt-1.5">
         <dl className="m-0 grid grid-cols-[7.5rem_minmax(0,1fr)] text-meta leading-normal">
           <Dt first>from</Dt>
@@ -330,11 +344,12 @@ function effectLine(status: string, d: InboxDetail, writes: string | null, editi
 }
 
 // Detail-pane `// section` band: 36px, hairlines, padding 0 32px.
-function Band({ children, aside, first = false }: { children: ReactNode; aside?: string; first?: boolean }) {
+// `flush`: hairline above but no gap (right under the timeline track).
+function Band({ children, aside, first = false, flush = false }: { children: ReactNode; aside?: string; first?: boolean; flush?: boolean }) {
   return (
     <div
       className={`flex h-9 shrink-0 items-center border-b border-rule bg-bg px-8 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase ${
-        first ? '' : 'mt-6 border-t'
+        first ? '' : flush ? 'border-t' : 'mt-6 border-t'
       }`}
     >
       <h2 className="font-mono">{children}</h2>

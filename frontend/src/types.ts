@@ -162,6 +162,7 @@ export type InboxDetail = {
     wrote_event: boolean
   } | null
   applications: AppRef[]
+  timeline: TimelineNode[] // the matched application's emails, oldest first
 }
 
 // Corrections for routing::edit (JT-16). Omitted = unchanged.
@@ -172,4 +173,22 @@ export type RouteEdit = {
   event_type?: string
   event_date?: string
   application_id?: number
+}
+
+export type TimelineNode = {
+  email_id: number
+  event_type: string | null
+  status: InboxStatus
+  received_at: string | null
+  read: boolean
+}
+
+export type InboxJob = {
+  application_id: number
+  company: string
+  title: string
+  status: string
+  emails: number
+  unread: number
+  latest: string | null
 }

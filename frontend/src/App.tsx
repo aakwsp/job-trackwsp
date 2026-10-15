@@ -767,6 +767,11 @@ export default function App() {
           onUndoEvent={(app) => move(api.undoEvent, app)}
           onStep={stepApp}
           onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
+          onOpenEmail={(id) => {
+            // Leaves the record and shows that email in INBOX.
+            switchPage('inbox')
+            inbox.open(id)
+          }}
         />
       )}
 
