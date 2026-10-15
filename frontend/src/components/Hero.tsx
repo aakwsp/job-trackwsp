@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 
 type Props = {
   title: string
@@ -31,8 +31,11 @@ export default function Hero({ title, subtitle, aside }: Props) {
 
   return (
     <div ref={ref} className="hero px-6 pt-14 pb-10" data-collapsed={collapsed}>
-      <h1 className="text-hero leading-none lowercase">{title}</h1>
-      <div className="mt-6 flex items-end justify-between gap-6">
+      {/* `.enter` (index.css) rises each piece in when the page mounts;
+          `--d` staggers them: title, then subtitle, then (in App) the
+          toolbar. */}
+      <h1 className="enter text-hero leading-none lowercase">{title}</h1>
+      <div className="enter mt-6 flex items-end justify-between gap-6" style={{ '--d': '80ms' } as CSSProperties}>
         <p className="max-w-xl text-meta leading-relaxed text-text-muted">{subtitle}</p>
         {aside}
       </div>

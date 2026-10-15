@@ -2,6 +2,7 @@ import type { Job } from '../types'
 import { GRID_COLS, type ViewMode } from '../lib/view'
 import JobCard from './JobCard'
 import JobLine from './JobLine'
+import { useReveal } from '../lib/reveal'
 
 type Props = {
   city: string
@@ -22,6 +23,9 @@ export default function CityGroup({
   onSelect,
   onOpen,
 }: Props) {
+  // The band rises in like the cards. The first one on screen rides in just
+  // after the hero and toolbar (see PAGE_ENTRY_DELAY_MS in lib/reveal).
+  const reveal = useReveal(`band:${city}`)
   return (
     <section>
       {/* The band is the collapse control: a <button> so it gets keyboard
@@ -36,7 +40,8 @@ export default function CityGroup({
         type="button"
         onClick={() => onToggle(city)}
         aria-expanded={!collapsed}
-        className="band sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text"
+        {...reveal}
+        className="band rise sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text"
       >
         <span>
           {collapsed ? '+ ' : '- '}// {city.toLowerCase()}

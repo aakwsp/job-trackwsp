@@ -20,6 +20,12 @@
   --motion: 180ms;
   --ease:   ease-out;
 
+  /* entrances (hero, toolbar, cards): the portfolio's ease-out curve — fast
+     start, long soft landing */
+  --ease-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --enter-ms:  500ms;   /* hero title / subtitle / toolbar */
+  --rise-ms:   350ms;   /* each band, card or row */
+
   /* tracker additions */
   --bg-hover:   #18161c;  /* row/cell hover */
   --rule-strong:#2e2a36;  /* section bands */
@@ -323,11 +329,48 @@
   from { opacity: 0; }
 }
 
+/* Entrances. Only transform and opacity move: the browser can animate those
+   without recomputing layout, which keeps a screenful of cards smooth.
+
+   `.enter` plays once when the element mounts (hero, toolbar). `--d` is its
+   delay, set inline to stagger them. `backwards` holds the starting frame
+   during the delay, so nothing flashes in its final spot first. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+}
+.enter {
+  animation: rise var(--enter-ms) var(--ease-expo) var(--d, 0ms) backwards;
+}
+
+/* `.rise` is for bands, cards and rows, driven by lib/reveal.tsx:
+   - waiting (neither attribute): hidden at the starting frame
+   - `data-shown`, set by the observer as it scrolls in: plays the rise,
+     with `--rise-delay` staggering a batch
+   - `data-revealed`, set by React when it already revealed earlier this
+     visit (e.g. after a DEFAULT / COMPACT / LINE switch): just shown
+   An animation rather than a transition on purpose: cards already use
+   `transition` (hover, applied fade) and `opacity` (applied dim), and with
+   `backwards` fill the animation lets go of both once it ends. */
+.rise:not([data-shown]):not([data-revealed]) {
+  opacity: 0;
+  transform: translateY(12px);
+}
+.rise[data-shown] {
+  animation: rise var(--rise-ms) var(--ease-expo) var(--rise-delay, 0ms) backwards;
+}
+
 /* Reduced motion: everything above simply happens instantly. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: 0s !important;
     transition-delay: 0s !important;
     animation: none !important;
+  }
+  .rise {
+    opacity: 1 !important;
+    transform: none !important;
   }
 }
