@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type TransitionEvent } from 'react'
 import type { Application, Job, StatusColor } from '../../types'
-import { activeFlags, statusInfo } from '../../lib/jobs'
+import { activeFlags, labelsFor, statusInfo } from '../../lib/jobs'
 import { nextStage, stageColor } from '../../lib/applications'
 import { prefersReducedMotion } from '../../lib/motion'
 import { TABS, type RecordFrom, type Tab } from '../../lib/record'
@@ -167,12 +167,17 @@ export default function Record({
   const postingStatus = job ? statusInfo(job) : null
   const color: StatusColor | null = app ? stageColor(app.status) : (postingStatus?.color ?? null)
   const statusLabel = app ? (closed ? app.status : `stage: ${app.status}`) : (postingStatus?.label ?? '')
-  const tags: TagSpec[] = [
-    ...(job ? activeFlags(job) : []).map((f) => ({ key: f.key, color: f.color, text: f.label })),
-    app
-      ? { key: 'stage', color: color ?? 'muted', text: app.status }
-      : { key: 'status', color: postingStatus?.color ?? 'muted', text: postingStatus?.label ?? '' },
-  ]
+  // Before applying, the same labels as the list row (`labelsFor`, so a
+  // past-due posting says "past due" once, in red). After, the flags plus
+  // the stage; an applied posting is never flagged past due.
+  const tags: TagSpec[] = !app
+    ? job
+      ? labelsFor(job)
+      : []
+    : [
+        ...(job ? activeFlags(job) : []).map((f) => ({ key: f.key, color: f.color, text: f.label })),
+        { key: 'stage', color: color ?? 'muted', text: app.status },
+      ]
 
   const keys = [
     `1–${TABS.length} tabs`,

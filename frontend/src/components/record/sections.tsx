@@ -1,5 +1,5 @@
 import type { Application, Job, Stage } from '../../types'
-import { daysLeft, daysSince, isClosingSoon, localYmd } from '../../lib/jobs'
+import { daysLeft, daysSince, isClosingSoon, isExpired, localYmd } from '../../lib/jobs'
 import { agoIso, recordTimeline, stageColor, stageTrack, type TimelineEntry } from '../../lib/applications'
 import type { Tab } from '../../lib/record'
 import {
@@ -95,7 +95,7 @@ function nextLine(job: Job | null, app: Application | null): string {
             ? 'closes tomorrow'
             : left === 0
               ? 'closes today'
-              : `closed ${-left}d ago`
+              : `past due ${-left}d`
     return `not applied · ${when}`
   }
   const days = app.stage_since ? (daysSince(localYmd(app.stage_since)) ?? 0) : 0
@@ -120,14 +120,17 @@ function AtAGlance({ m, pad }: SectionProps) {
   const applied = app?.applied_at ? daysSince(localYmd(app.applied_at)) : null
   const inStage = app?.stage_since ? daysSince(localYmd(app.stage_since)) : null
   const left = daysLeft(job?.deadline ?? null)
-  const cells: { label: string; value: string; pink?: boolean }[] = [
+  // Only before applying does the deadline matter; then it's tinted like
+  // the posting's status: pink in the final days, red once passed.
+  const deadlineTone = !job || app ? '' : isExpired(job) ? 'text-red' : isClosingSoon(job) ? 'text-pink' : ''
+  const cells: { label: string; value: string; tone?: string }[] = [
     { label: 'since first seen', value: first === null ? '—' : `${first}d` },
     { label: 'since applied', value: applied === null ? '—' : `${applied}d` },
     { label: 'in stage', value: inStage === null ? '—' : `${inStage}d` },
     {
       label: 'deadline',
       value: !job ? '—' : left === null ? 'rolling' : left < 0 ? 'past due' : `${left}d left`,
-      pink: !!job && isClosingSoon(job) && !app,
+      tone: deadlineTone,
     },
   ]
   return (
@@ -142,7 +145,7 @@ function AtAGlance({ m, pad }: SectionProps) {
             // (as a <dl> requires) but shows under the number.
             <div key={c.label} className="flex flex-col-reverse border-r border-b border-rule-strong px-3 py-2.5">
               <dt className="mt-1 text-[0.59375rem] tracking-[0.12em] text-text-muted uppercase">{c.label}</dt>
-              <dd className={`m-0 text-sub ${c.pink ? 'text-pink' : ''}`}>{c.value}</dd>
+              <dd className={`m-0 text-sub ${c.tone ?? ''}`}>{c.value}</dd>
             </div>
           ))}
         </dl>
@@ -322,7 +325,10 @@ function StageTrack({ app }: { app: Application | null }) {
 
 function Deadline({ job }: { job: Job }) {
   return job.deadline ? (
-    <span className={isClosingSoon(job) ? 'text-pink' : ''}>{job.deadline}</span>
+    // Same tint as the posting's status; none once applied.
+    <span className={job.applied ? '' : isExpired(job) ? 'text-red' : isClosingSoon(job) ? 'text-pink' : ''}>
+      {job.deadline}
+    </span>
   ) : (
     <span className="text-text-muted">rolling</span>
   )

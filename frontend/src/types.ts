@@ -28,12 +28,12 @@ export type SyncCounts = {
   skipped: number
 }
 
-// What the diamond says about a posting. Past due shares sand with rolling
-// but is its own status, so it can have its own label and filter row.
+// What the diamond says about a posting, one per posting (first match in
+// `statusOf`). Past due is red, and also gets a red flag square.
 export type StatusKey = 'applied' | 'closing' | 'deadline' | 'rolling' | 'pastdue'
 
 // The square flags. Keys of `FLAGS` in lib/jobs.ts.
-export type FlagKey = 'stale' | 'borderline'
+export type FlagKey = 'pastdue' | 'stale' | 'borderline'
 
 // Checked rows in each filter group. Empty = that group doesn't filter.
 // Within a group it's OR (any checked row matches); across groups AND.
@@ -44,9 +44,10 @@ export type Filters = {
   flags: FlagKey[]
 }
 
-// The four status colours, shared by the stripe, the diamond and the flag
-// squares. Matches the `data-color` selectors in index.css.
-export type StatusColor = 'green' | 'pink' | 'blue' | 'sand'
+// The status colours, shared by the stripe, the diamond and the flag
+// squares. Matches the `data-color` selectors in index.css. 'red' is past
+// due (`--status-overdue`).
+export type StatusColor = 'green' | 'pink' | 'blue' | 'sand' | 'red'
 
 // Pipeline stages. The first four are open, in order; the last two close an
 // application. Same values as the CHECK constraints in 0001_init.sql.

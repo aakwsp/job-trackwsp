@@ -43,7 +43,8 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
           - city: 12ch, the longest city in the data ("cole harbour").
           - date: 10ch, "YYYY-MM-DD"; "rolling" is shorter.
           - labels: room for the widest combination — "30+ days",
-            "borderline" and "closing soon" (30ch of text) plus each label's
+            "borderline" and "closing soon" (30ch of text; the past-due
+            set, "past due" + "30+ days" + "borderline", is 26ch) plus each label's
             padding and border and the gaps between them. A new flag in
             FLAGS would need this widened. */}
       <span className="flex shrink-0 items-center text-meta text-text-dim">
