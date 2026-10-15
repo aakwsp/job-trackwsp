@@ -58,9 +58,12 @@ export function activeRows(f: Filters): { row: FilterRow; mode: FilterMode }[] {
   })
 }
 
-/** Turns every panel row off; leaves the toolbar's search and city. */
+/**
+ * Puts the panel back to its defaults (everything off except removed,
+ * which stays excluded); leaves the toolbar's search and city.
+ */
 export function resetPanel(f: Filters): Filters {
-  return { ...f, statuses: {}, flags: {} }
+  return { ...f, statuses: DEFAULT_FILTERS.statuses, flags: DEFAULT_FILTERS.flags }
 }
 
 /**
@@ -82,6 +85,9 @@ export function rowCounts(jobs: Job[], f: Filters): Map<string, number> {
 export const rowId = (row: FilterRow) => `${row.group}:${row.key}`
 
 const STORAGE_KEY = 'jt.filters'
+// Bumped when a new default has to reach filters saved before it existed.
+// 2: removed postings excluded by default (JT-26).
+const VERSION = 2
 
 // Same storage and try/catch reasoning as `loadView` in view.ts. Anything
 // that doesn't look right (older shape, unknown keys) is dropped rather than
@@ -90,14 +96,25 @@ export function loadFilters(): Filters {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return DEFAULT_FILTERS
-    const saved = JSON.parse(raw) as { query?: unknown; city?: unknown; statuses?: unknown; flags?: unknown }
+    const saved = JSON.parse(raw) as {
+      v?: unknown
+      query?: unknown
+      city?: unknown
+      statuses?: unknown
+      flags?: unknown
+    }
     const statusKeys = new Set<string>(STATUSES.map((s) => s.key))
     const flagKeys = new Set<string>(FLAGS.map((f) => f.key))
+    const flags = loadGroup(saved.flags, flagKeys)
+    // A save from before version 2 never had a "removed" row, so its
+    // absence means "not chosen yet", not "off": apply the default once.
+    // Saved again with `v: 2`, so turning it off afterwards sticks.
+    if (saved.v !== VERSION) flags.removed ??= 'exclude'
     return {
       query: typeof saved.query === 'string' ? saved.query : '',
       city: typeof saved.city === 'string' ? saved.city : '',
       statuses: loadGroup(saved.statuses, statusKeys),
-      flags: loadGroup(saved.flags, flagKeys),
+      flags,
     }
   } catch {
     return DEFAULT_FILTERS
@@ -118,7 +135,7 @@ function loadGroup(raw: unknown, keys: Set<string>): Record<string, FilterMode> 
 
 export function saveFilters(f: Filters) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(f))
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...f, v: VERSION }))
   } catch {
     // not worth surfacing; it just won't be remembered
   }

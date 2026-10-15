@@ -166,11 +166,13 @@ fn spawn_background_sync(pool: SqlitePool) {
     std::thread::spawn(move || loop {
         match sync::run_sync_blocking(&pool, &url, &token) {
             Ok(counts) => log::info!(
-                "sheet sync: inserted={} updated={} merged={} skipped={}",
+                "sheet sync: inserted={} updated={} merged={} skipped={} removed={}{}",
                 counts.inserted,
                 counts.updated,
                 counts.merged,
-                counts.skipped
+                counts.skipped,
+                counts.removed,
+                if counts.removal_skipped { " (removal pass skipped)" } else { "" }
             ),
             Err(e) => log::error!("sheet sync failed: {e}"),
         }

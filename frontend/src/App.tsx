@@ -389,7 +389,11 @@ export default function App() {
     setNotice(null)
     try {
       const c = await api.syncNow()
-      setNotice(`synced: ${c.inserted} new · ${c.updated} updated · ${c.merged} merged · ${c.skipped} skipped`)
+      setNotice(
+        `synced: ${c.inserted} new · ${c.updated} updated · ${c.merged} merged · ${c.skipped} skipped · ${
+          c.removal_skipped ? 'removal check skipped (sheet looked incomplete)' : `${c.removed} removed`
+        }`,
+      )
       setReloadKey((k) => k + 1)
     } catch (e) {
       setNotice(String(e))

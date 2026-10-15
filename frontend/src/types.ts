@@ -15,6 +15,7 @@ export type Job = {
   source: string | null
   first_seen: string | null // 'YYYY-MM-DD'
   last_seen: string | null
+  removed_at: string | null // full ISO timestamp; set once it's gone from the sheet
   applied: boolean
   applied_at: string | null // full ISO timestamp, UTC
   app_status: AppStatus | null // the application's status; null when not applied
@@ -27,6 +28,8 @@ export type SyncCounts = {
   updated: number
   merged: number
   skipped: number
+  removed: number
+  removal_skipped: boolean
 }
 
 // What the diamond says about a posting, one per posting (first match in
@@ -34,7 +37,7 @@ export type SyncCounts = {
 export type StatusKey = 'applied' | 'closing' | 'deadline' | 'rolling' | 'pastdue'
 
 // The square flags. Keys of `FLAGS` in lib/jobs.ts.
-export type FlagKey = 'rejected' | 'stale' | 'borderline'
+export type FlagKey = 'rejected' | 'stale' | 'borderline' | 'removed'
 
 // A filter row that isn't off. Include = show only matches; exclude = hide
 // matches.

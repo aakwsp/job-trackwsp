@@ -50,7 +50,16 @@ insert a new row.
 ## Data model
 
 - `jobs` — mirrors the sheet. Owned by the sync. `hidden` lets the user dismiss
-  a posting without the sync resurrecting it.
+  a posting without the sync resurrecting it. `removed_at` (JT-26) is when a
+  posting disappeared from the sheet: after a sync, rows the response didn't
+  include get `removed_at = now`, and a row that reappears gets it cleared.
+  The removal pass only runs when the response has a `postings` array with at
+  least 50% as many rows as the current non-removed count; otherwise it's
+  skipped with a warning, so a failed or partial fetch never marks anything
+  removed. A job with an `applications` row is never marked removed. Removal
+  is its own column, not a `posting_status` value, because the sync
+  overwrites `posting_status` from the sheet. JOBS excludes removed rows by
+  default (the "removed" filter row); PIPELINE's record still opens them.
 - `applications` — the user's applications. **Never** written by the sync.
   `job_id` is nullable, since the user can apply to things the scheduler never
   found. `status` is stored and recomputed whenever an event is written.
