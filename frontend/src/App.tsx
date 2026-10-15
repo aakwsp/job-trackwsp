@@ -19,6 +19,7 @@ import Placeholder from './components/Placeholder'
 import {
   CheckMailButton,
   GeminiKeyInput,
+  GeminiKeyRow,
   GmailConnectBlock,
   GmailStatusLine,
   MailStatusLine,
@@ -591,9 +592,13 @@ export default function App() {
                     <span className={gmail.status.kind === 'connected' ? 'mt-1 block' : undefined}>
                       <GmailStatusLine {...gmailProps} />
                     </span>
-                    {gmail.status.kind === 'connected' && mail.status?.needs_key && (
-                      <GeminiKeyInput onSaved={mail.refresh} />
-                    )}
+                    {gmail.status.kind === 'connected' &&
+                      mail.status &&
+                      (mail.status.needs_key ? (
+                        <GeminiKeyInput onSaved={mail.refresh} />
+                      ) : (
+                        <GeminiKeyRow onChanged={mail.refresh} />
+                      ))}
                     {/* Errors while connected (a failed disconnect) go
                         here; while disconnected the block shows them. */}
                     {gmail.status.kind === 'connected' && gmail.error && (

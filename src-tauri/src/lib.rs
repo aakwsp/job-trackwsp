@@ -371,6 +371,13 @@ async fn llm_key_status(app: tauri::AppHandle) -> Result<bool, String> {
     off_main_thread(app, |_| extract::has_key(&gmail::store::KeyringStore), |e| e).await
 }
 
+/// [ view key ]: the stored Gemini key, shown while the mouse stays on the
+/// row. Only on that explicit click; never logged.
+#[tauri::command]
+async fn llm_get_key(app: tauri::AppHandle) -> Result<Option<String>, String> {
+    off_main_thread(app, |_| extract::get_key(&gmail::store::KeyringStore), |e| e).await
+}
+
 /// [ save key ]: stores the Gemini key in the OS keyring (service
 /// job-trackwsp, user gemini-api-key), then starts extracting. The key is
 /// never logged or written anywhere else.
@@ -463,6 +470,7 @@ pub fn run() {
             mail_check,
             mail_restore,
             llm_key_status,
+            llm_get_key,
             llm_save_key
         ])
         .setup(|app| {

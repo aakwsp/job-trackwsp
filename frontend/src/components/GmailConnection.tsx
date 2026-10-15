@@ -48,7 +48,7 @@ function hhmm(iso: string): string {
 // password input so it's masked on screen; Rust puts it straight into the
 // OS keyring and never sends it back. No <form>: this sits inside the
 // hero's <p>, where a form isn't allowed, so Enter is handled here.
-export function GeminiKeyInput({ onSaved }: { onSaved: () => void }) {
+export function GeminiKeyInput({ onSaved, onCancel }: { onSaved: () => void; onCancel?: () => void }) {
   const [key, setKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -89,7 +89,65 @@ export function GeminiKeyInput({ onSaved }: { onSaved: () => void }) {
       >
         [ save key ]
       </button>
+      {onCancel && (
+        <button type="button" onClick={onCancel} className="cursor-pointer hover:text-text">
+          [ cancel ]
+        </button>
+      )}
       {error && <span className="text-pink">{error}</span>}
+    </span>
+  )
+}
+
+// Once a key is saved: "gemini key ••••••••••", styled like the "connected
+// as" line. [ view key ] and [ change key ] only show while the row is
+// hovered or has keyboard focus (`group-hover` / `group-focus-within`: the
+// buttons read the state of the `group` element around them). A revealed
+// key is forgotten as soon as the mouse leaves or focus moves away.
+export function GeminiKeyRow({ onChanged }: { onChanged: () => void }) {
+  const [revealed, setRevealed] = useState<string | null>(null)
+  const [changing, setChanging] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function view() {
+    setError(null)
+    try {
+      setRevealed(await api.llmGetKey())
+    } catch (e) {
+      setError(String(e))
+    }
+  }
+
+  if (changing)
+    return (
+      <GeminiKeyInput
+        onSaved={() => {
+          setChanging(false)
+          onChanged()
+        }}
+        onCancel={() => setChanging(false)}
+      />
+    )
+
+  const hidden = 'invisible ml-4 cursor-pointer group-focus-within:visible group-hover:visible hover:text-text'
+  return (
+    <span
+      className="group mt-1 block"
+      onMouseLeave={() => setRevealed(null)}
+      // focusout bubbles in React (as onBlur); `relatedTarget` is where
+      // focus went. Leaving the row entirely hides the key again.
+      onBlur={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setRevealed(null)
+      }}
+    >
+      gemini key <span className="text-text">{revealed ?? '••••••••••'}</span>
+      <button type="button" onClick={view} className={hidden}>
+        [ view key ]
+      </button>
+      <button type="button" onClick={() => setChanging(true)} className={hidden}>
+        [ change key ]
+      </button>
+      {error && <span className="ml-4 text-pink">{error}</span>}
     </span>
   )
 }

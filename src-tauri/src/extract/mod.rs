@@ -286,6 +286,9 @@ pub fn run_with(pool: &SqlitePool, client: &dyn LlmClient, model: &str, sleep: S
                         return;
                     }
                     Err(e) => {
+                        // The kind and Gemini's message (which carries the
+                        // HTTP status). Never the email or the key.
+                        log::warn!("extraction failed for email {id}: {}: {e}", e.kind());
                         counts.lock().unwrap().failed += 1;
                         let _ = block_on(
                             sqlx::query("UPDATE emails SET extract_error = ? WHERE id = ? AND status = 'pending'")
@@ -409,6 +412,12 @@ fn store(pool: &SqlitePool, email_id: i64, model: &str, raw: &str, x: &Extractio
 /// Whether a key is stored (the UI shows the key input when not).
 pub fn has_key(keys: &dyn TokenStore) -> Result<bool, String> {
     keys.get(KEY_ACCOUNT).map(|k| k.is_some()).map_err(|e| e.to_string())
+}
+
+/// The stored key, for the [ view key ] button. Only ever returned to the
+/// app's own UI on an explicit click; never logged.
+pub fn get_key(keys: &dyn TokenStore) -> Result<Option<String>, String> {
+    keys.get(KEY_ACCOUNT).map_err(|e| e.to_string())
 }
 
 pub fn save_key(keys: &dyn TokenStore, key: &str) -> Result<(), String> {

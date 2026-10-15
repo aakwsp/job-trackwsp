@@ -1,12 +1,17 @@
 //! The Gemini call, behind a trait so the extraction loop can be tested
 //! with a mock instead of the network.
 //!
-//! REST `models.generateContent` with structured output: the request's
-//! `generationConfig.responseFormat.text` carries `mimeType:
-//! application/json` and a JSON Schema, and the model's answer comes back
-//! as JSON text in `candidates[0].content.parts[*].text`. Auth is the
-//! `x-goog-api-key` header. (Shape as documented at
-//! ai.google.dev/gemini-api/docs/generate-content/structured-output.)
+//! REST `models.generateContent` with structured output:
+//! `generationConfig.responseMimeType = "application/json"` plus the JSON
+//! Schema in `responseJsonSchema`. The answer comes back as JSON text in
+//! `candidates[0].content.parts[*].text`. Auth is the `x-goog-api-key`
+//! header.
+//!
+//! Not `responseFormat.text.mimeType = "application/json"`, as the
+//! structured-output guide shows: the live API types that field as an enum
+//! and rejects the MIME string with a 400 (every email failed that way).
+//! The pair used here is the API reference's and was checked against the
+//! live API.
 
 use std::time::Duration;
 
@@ -26,6 +31,17 @@ pub enum CallError {
     /// This email's request failed in a way a retry won't fix (blocked
     /// prompt, empty answer, other 4xx).
     Failed(String),
+}
+
+impl CallError {
+    /// The error's kind, for logs.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            CallError::Retryable(_) => "retryable",
+            CallError::Auth(_) => "auth",
+            CallError::Failed(_) => "failed",
+        }
+    }
 }
 
 impl std::fmt::Display for CallError {
@@ -56,6 +72,20 @@ pub struct GeminiHttp {
 }
 
 impl GeminiHttp {
+    /// The request body. Separate so its shape is tested.
+    pub fn request_body(system: &str, user: &str, schema: &Value) -> Value {
+        json!({
+            "systemInstruction": { "parts": [{ "text": system }] },
+            "contents": [{ "role": "user", "parts": [{ "text": user }] }],
+            "generationConfig": {
+                // Extraction, not creativity.
+                "temperature": 0,
+                "responseMimeType": "application/json",
+                "responseJsonSchema": schema
+            }
+        })
+    }
+
     pub fn new(api_key: String) -> Result<Self, CallError> {
         let http = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(90))
@@ -67,17 +97,7 @@ impl GeminiHttp {
 
 impl LlmClient for GeminiHttp {
     fn generate(&self, model: &str, system: &str, user: &str, schema: &Value) -> Result<String, CallError> {
-        let body = json!({
-            "systemInstruction": { "parts": [{ "text": system }] },
-            "contents": [{ "role": "user", "parts": [{ "text": user }] }],
-            "generationConfig": {
-                // Extraction, not creativity.
-                "temperature": 0,
-                "responseFormat": {
-                    "text": { "mimeType": "application/json", "schema": schema }
-                }
-            }
-        });
+        let body = Self::request_body(system, user, schema);
         let resp = self
             .http
             .post(format!("{BASE}/{model}:generateContent"))
@@ -170,6 +190,19 @@ pub fn classify_response(status: u16, body: &str) -> Result<String, CallError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The shape that the live API accepted (2026-10-15); the guide's
+    /// `responseFormat.text.mimeType: "application/json"` is rejected.
+    #[test]
+    fn request_uses_response_mime_type_and_json_schema() {
+        let body = GeminiHttp::request_body("sys", "user", &json!({"type": "object"}));
+        let gc = &body["generationConfig"];
+        assert_eq!(gc["responseMimeType"], "application/json");
+        assert_eq!(gc["responseJsonSchema"]["type"], "object");
+        assert!(gc.get("responseFormat").is_none());
+        assert_eq!(body["systemInstruction"]["parts"][0]["text"], "sys");
+        assert_eq!(body["contents"][0]["parts"][0]["text"], "user");
+    }
 
     #[test]
     fn classifies_responses() {
