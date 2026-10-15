@@ -17,6 +17,7 @@ export type Job = {
   last_seen: string | null
   applied: boolean
   applied_at: string | null // full ISO timestamp, UTC
+  app_status: AppStatus | null // the application's status; null when not applied
   notes: string | null
 }
 
@@ -29,11 +30,11 @@ export type SyncCounts = {
 }
 
 // What the diamond says about a posting, one per posting (first match in
-// `statusOf`). Past due is red, and also gets a red flag square.
+// `statusOf`). Past due is grey (`--text-dim`): the posting is closed.
 export type StatusKey = 'applied' | 'closing' | 'deadline' | 'rolling' | 'pastdue'
 
 // The square flags. Keys of `FLAGS` in lib/jobs.ts.
-export type FlagKey = 'pastdue' | 'stale' | 'borderline'
+export type FlagKey = 'rejected' | 'stale' | 'borderline'
 
 // Checked rows in each filter group. Empty = that group doesn't filter.
 // Within a group it's OR (any checked row matches); across groups AND.
@@ -45,9 +46,9 @@ export type Filters = {
 }
 
 // The status colours, shared by the stripe, the diamond and the flag
-// squares. Matches the `data-color` selectors in index.css. 'red' is past
-// due (`--status-overdue`).
-export type StatusColor = 'green' | 'pink' | 'blue' | 'sand' | 'red'
+// squares. Matches the `data-color` selectors in index.css. 'dim' is the
+// existing `--text-dim` grey, for things that are closed: past due, rejected.
+export type StatusColor = 'green' | 'pink' | 'blue' | 'sand' | 'dim'
 
 // Pipeline stages. The first four are open, in order; the last two close an
 // application. Same values as the CHECK constraints in 0001_init.sql.

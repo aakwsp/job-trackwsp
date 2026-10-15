@@ -167,16 +167,18 @@ export default function Record({
   const postingStatus = job ? statusInfo(job) : null
   const color: StatusColor | null = app ? stageColor(app.status) : (postingStatus?.color ?? null)
   const statusLabel = app ? (closed ? app.status : `stage: ${app.status}`) : (postingStatus?.label ?? '')
-  // Before applying, the same labels as the list row (`labelsFor`, so a
-  // past-due posting says "past due" once, in red). After, the flags plus
-  // the stage; an applied posting is never flagged past due.
+  // Before applying, the same labels as the list row (`labelsFor`). After,
+  // the flags plus the stage, unless a flag already says it (the grey
+  // rejected square), so "rejected" isn't shown twice.
   const tags: TagSpec[] = !app
     ? job
       ? labelsFor(job)
       : []
     : [
         ...(job ? activeFlags(job) : []).map((f) => ({ key: f.key, color: f.color, text: f.label })),
-        { key: 'stage', color: color ?? 'muted', text: app.status },
+        ...(job && activeFlags(job).some((f) => f.key === app.status)
+          ? []
+          : [{ key: app.status, color: color ?? ('muted' as const), text: app.status }]),
       ]
 
   const keys = [

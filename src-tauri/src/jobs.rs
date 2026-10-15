@@ -28,6 +28,9 @@ pub struct JobRow {
     pub applied: bool,
     /// `applications.applied_at`, full ISO timestamp; None when not applied.
     pub applied_at: Option<String>,
+    /// `applications.status` (applied, interview, rejected, ...); None when
+    /// not applied. The list flags rejected postings with it.
+    pub app_status: Option<String>,
     /// From `applications.notes` when applied, else `job_notes.body`.
     pub notes: Option<String>,
 }
@@ -89,7 +92,7 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
         "SELECT j.id, j.company, j.title, j.city, j.req_id, j.url, j.deadline,
                 j.posting_status, j.borderline, j.borderline_reason, j.source,
                 j.first_seen, j.last_seen,
-                a.id IS NOT NULL AS applied, a.applied_at,
+                a.id IS NOT NULL AS applied, a.applied_at, a.status AS app_status,
                 COALESCE(a.notes, n.body) AS notes
          FROM jobs j
          -- at most one application per job (set_applied never makes a second)

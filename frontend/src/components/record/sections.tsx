@@ -121,8 +121,8 @@ function AtAGlance({ m, pad }: SectionProps) {
   const inStage = app?.stage_since ? daysSince(localYmd(app.stage_since)) : null
   const left = daysLeft(job?.deadline ?? null)
   // Only before applying does the deadline matter; then it's tinted like
-  // the posting's status: pink in the final days, red once passed.
-  const deadlineTone = !job || app ? '' : isExpired(job) ? 'text-red' : isClosingSoon(job) ? 'text-pink' : ''
+  // the posting's status: pink in the final days, grey once passed.
+  const deadlineTone = !job || app ? '' : isExpired(job) ? 'text-text-dim' : isClosingSoon(job) ? 'text-pink' : ''
   const cells: { label: string; value: string; tone?: string }[] = [
     { label: 'since first seen', value: first === null ? '—' : `${first}d` },
     { label: 'since applied', value: applied === null ? '—' : `${applied}d` },
@@ -326,7 +326,7 @@ function StageTrack({ app }: { app: Application | null }) {
 function Deadline({ job }: { job: Job }) {
   return job.deadline ? (
     // Same tint as the posting's status; none once applied.
-    <span className={job.applied ? '' : isExpired(job) ? 'text-red' : isClosingSoon(job) ? 'text-pink' : ''}>
+    <span className={job.applied ? '' : isExpired(job) ? 'text-text-dim' : isClosingSoon(job) ? 'text-pink' : ''}>
       {job.deadline}
     </span>
   ) : (

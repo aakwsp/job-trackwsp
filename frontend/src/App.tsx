@@ -175,12 +175,12 @@ export default function App() {
   // applications are refetched, which is what puts it in PIPELINE's applied
   // column and gives the open record its application tab.
   async function markApplied(job: Job) {
-    patchJob(job.id, { applied: true, applied_at: new Date().toISOString() })
+    patchJob(job.id, { applied: true, applied_at: new Date().toISOString(), app_status: 'applied' })
     try {
       await api.setApplied(job.id, true)
       await refreshApps()
     } catch (e) {
-      patchJob(job.id, { applied: false, applied_at: null })
+      patchJob(job.id, { applied: false, applied_at: null, app_status: null })
       setNotice(String(e))
     }
   }
@@ -189,12 +189,12 @@ export default function App() {
   // application has already moved past 'applied', so this can't throw away
   // an interview.
   async function unapply(job: Job) {
-    patchJob(job.id, { applied: false, applied_at: null })
+    patchJob(job.id, { applied: false, applied_at: null, app_status: null })
     try {
       await api.setApplied(job.id, false)
       await refreshApps()
     } catch (e) {
-      patchJob(job.id, { applied: true, applied_at: job.applied_at })
+      patchJob(job.id, { applied: true, applied_at: job.applied_at, app_status: job.app_status })
       setNotice(String(e))
     }
   }
@@ -205,7 +205,11 @@ export default function App() {
   // wait.
   async function move(call: (id: number) => Promise<Application>, app: Application) {
     try {
-      replaceApp(await call(app.id))
+      const updated = await call(app.id)
+      replaceApp(updated)
+      // The JOBS row carries the status too (for the rejected square), so
+      // keep it in step.
+      if (updated.job_id !== null) patchJob(updated.job_id, { app_status: updated.status })
     } catch (e) {
       setNotice(String(e))
     }

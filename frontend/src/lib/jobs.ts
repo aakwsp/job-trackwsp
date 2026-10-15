@@ -98,7 +98,7 @@ export const STATUSES: Status[] = [
   { key: 'closing', color: 'pink', label: 'closing soon' },
   { key: 'deadline', color: 'blue', label: 'has deadline' },
   { key: 'rolling', color: 'sand', label: 'rolling' },
-  { key: 'pastdue', color: 'red', label: 'past due' },
+  { key: 'pastdue', color: 'dim', label: 'past due' },
 ]
 
 // First match wins.
@@ -135,15 +135,15 @@ export type Flag = {
 
 export const FLAGS: Flag[] = [
   {
-    // Says the same as the red diamond, but as a square it sits in the
-    // flag slots on every view and has its own row in // flags. Applied
-    // postings never get it: once you've applied, the deadline is moot.
-    key: 'pastdue',
-    color: 'red',
-    label: 'past due',
-    short: 'PD',
-    hint: 'deadline has passed',
-    test: (job) => !job.applied && isExpired(job),
+    // The posting stays green (it was applied); the grey square says how it
+    // ended. `app_status` comes from the application, so a rejection marked
+    // in PIPELINE shows up here too (App patches it after the move).
+    key: 'rejected',
+    color: 'dim',
+    label: 'rejected',
+    short: 'R✕',
+    hint: 'application rejected',
+    test: (job) => job.app_status === 'rejected',
   },
   {
     key: 'stale',
@@ -171,16 +171,15 @@ export type LabelSpec = { key: string; color: StatusColor; text: string }
 
 /**
  * The bordered labels for one posting: squares first, then the diamond, in
- * marker order. `short` abbreviates the square labels (COMPACT). When a
- * square already says what the diamond says (past due), the diamond's label
- * is left out rather than repeated.
+ * marker order. `short` abbreviates the square labels (COMPACT); diamond
+ * labels are always full words.
  */
 export function labelsFor(job: Job, short = false): LabelSpec[] {
   const status = statusInfo(job)
-  const flags = activeFlags(job)
-  const labels: LabelSpec[] = flags.map((f) => ({ key: f.key, color: f.color, text: short ? f.short : f.label }))
-  if (!flags.some((f) => f.key === status.key)) labels.push({ key: status.key, color: status.color, text: status.label })
-  return labels
+  return [
+    ...activeFlags(job).map((f) => ({ key: f.key, color: f.color, text: short ? f.short : f.label })),
+    { key: status.key, color: status.color, text: status.label },
+  ]
 }
 
 /** Every flag in slot order, with whether it's showing for this job. */

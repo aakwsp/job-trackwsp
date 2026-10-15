@@ -42,9 +42,8 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
           `ch` is exact, and it scales with the text.
           - city: 12ch, the longest city in the data ("cole harbour").
           - date: 10ch, "YYYY-MM-DD"; "rolling" is shorter.
-          - labels: room for the widest combination — "30+ days",
-            "borderline" and "closing soon" (30ch of text; the past-due
-            set, "past due" + "30+ days" + "borderline", is 26ch) plus each label's
+          - labels: room for the widest combination — "rejected",
+            "30+ days", "borderline" and "applied" (33ch of text) plus each label's
             padding and border and the gaps between them. A new flag in
             FLAGS would need this widened. */}
       <span className="flex shrink-0 items-center text-meta text-text-dim">
@@ -53,7 +52,7 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
         </span>
         <span className="w-[3ch] text-center">·</span>
         <span className="w-[10ch]">{dateText(job)}</span>
-        <span className="ml-4 flex w-[38ch] gap-2">
+        <span className="ml-4 flex w-[43ch] gap-2">
           <Labels job={job} />
         </span>
       </span>

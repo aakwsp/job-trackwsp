@@ -85,8 +85,8 @@ lowercase, hairline dividers, zero border radius anywhere, no shadows.
 - `--bg #141216`, `--text #d8cab8`, `--text-muted #8a7e8e`, `--rule #211e26`.
 - DM Serif Display for headings, Space Mono for everything else.
 - Status shows as a 3px left edge on a row: pink = closing soon, blue =
-  borderline, green = applied, red (`--status-overdue`) = past due and not
-  applied.
+  borderline, green = applied, grey (`--text-dim`) = past due and not
+  applied. A rejected application keeps green and gets a grey flag square.
 - Section headers read `// toronto, on` in 10px uppercase mono, with a muted
   count on the right.
 - The list must stay **dense**: there are 230+ postings, so rows, not cards.

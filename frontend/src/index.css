@@ -35,9 +35,7 @@
   --status-pink:  #f2bdc9;  /* deadline within CLOSING_SOON_DAYS · stale square */
   --status-blue:  #b8c8f0;  /* deadline further out · borderline square */
   --status-sand:  #c8c0a8;  /* rolling */
-  /* past due. Darker than pink, so the two read apart by lightness and
-     not just hue. */
-  --status-overdue: #d9787a;
+  /* closed (past due, rejected) uses --text-dim above, not a token of its own */
 }
 
 @theme {
@@ -53,7 +51,6 @@
   --color-pink:          var(--status-pink);
   --color-blue:          var(--status-blue);
   --color-sand:          var(--status-sand);
-  --color-red:           var(--status-overdue);
 
   --font-serif: "DM Serif Display", serif;
   --font-mono:  "Space Mono", monospace;
@@ -193,7 +190,7 @@
 [data-color="pink"]  { --c: var(--status-pink); }
 [data-color="blue"]  { --c: var(--status-blue); }
 [data-color="sand"]  { --c: var(--status-sand); }
-[data-color="red"]   { --c: var(--status-overdue); }
+[data-color="dim"]   { --c: var(--text-dim); }
 /* a closed application has no status colour; its tag reads muted */
 [data-color="muted"] { --c: var(--text-muted); }
 
