@@ -23,3 +23,22 @@ export function saveFolded(s: Set<FoldKey>) {
     // not saved; it still works for this session
   }
 }
+
+// The INBOX list pane folded to a narrow strip (`[`).
+const LIST_KEY = 'jt.inbox.listCollapsed'
+
+export function loadListCollapsed(): boolean {
+  try {
+    return localStorage.getItem(LIST_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function saveListCollapsed(v: boolean) {
+  try {
+    localStorage.setItem(LIST_KEY, v ? '1' : '0')
+  } catch {
+    // not saved; it still works for this session
+  }
+}

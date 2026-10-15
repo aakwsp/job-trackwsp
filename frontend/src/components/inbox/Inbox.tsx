@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useStuck } from '../../lib/useStuck'
-import { loadFolded, saveFolded, type FoldKey } from '../../lib/inboxFold'
+import { loadFolded, loadListCollapsed, saveFolded, saveListCollapsed, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
 import type { IgnoredRow, InboxJob, InboxRow } from '../../types'
 import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows, type MailSort } from '../../lib/inbox'
@@ -8,7 +8,8 @@ import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
 
 // INBOX (JT-18), from design/inbox/Inbox.dc.html: the list on the left
-// (2fr), the open email on the right (3fr). The detail column is sticky with
+// (about a quarter of the window, or a narrow strip when collapsed with
+// `[`), the open email on the right. The detail column is sticky with
 // its own scroll, so opening a row far down the list doesn't leave it
 // off-screen.
 
@@ -26,9 +27,18 @@ type JobSort = 'activity' | 'company'
 export default function Inbox({ inbox, top, connected }: Props) {
   // `g` toggles by email / by job.
   const [mode, setMode] = useState<Mode>('email')
-  // The search line: `/` opens (or re-focuses) it, esc clears and closes.
-  const [searchOpen, setSearchOpen] = useState(false)
+  // The search line is always there: `/` jumps into it, esc clears it and
+  // leaves it.
   const searchRef = useRef<HTMLInputElement>(null)
+  // The list pane folded to a strip (`[` or the toolbar toggle); kept
+  // across launches like the folded sections.
+  const [narrow, setNarrow] = useState(loadListCollapsed)
+  function toggleNarrow() {
+    setNarrow((n) => {
+      saveListCollapsed(!n)
+      return !n
+    })
+  }
   const [jobSort, setJobSort] = useState<JobSort>('activity')
   const [jobId, setJobId] = useState<number | null>(null)
   const [sort, setSort] = useState<MailSort>('newest')
@@ -103,22 +113,19 @@ export default function Inbox({ inbox, top, connected }: Props) {
     if (next !== undefined) open(next, false)
   }
   const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
-  const keyState = useRef({ current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob, searchOpen })
+  const keyState = useRef({ current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob })
   useEffect(() => {
-    keyState.current = { current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob, searchOpen }
+    keyState.current = { current, timeline: (inbox.detail?.timeline ?? []).filter((n) => n.kind === 'email'), openId, order, jobOrder, mode, jobId, openJob }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob, searchOpen: searching } = keyState.current
-      if (e.key === 'Escape' && searching) {
-        inbox.setQuery('')
-        setSearchOpen(false)
-      } else if (e.key === '/') {
-        setSearchOpen(true)
-        // Focus after React has rendered the line (it may be opening now).
-        requestAnimationFrame(() => searchRef.current?.focus())
+      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob } = keyState.current
+      if (e.key === '/') {
+        searchRef.current?.focus()
+      } else if (e.key === '[') {
+        toggleNarrow()
       } else if (e.key === 'j' || e.key === 'k') {
         const step = e.key === 'j' ? 1 : -1
         if (md === 'job') {
@@ -149,30 +156,45 @@ export default function Inbox({ inbox, top, connected }: Props) {
   }, [inbox])
 
   return (
-    <div className="grid grid-cols-1 border-t border-rule-strong border-b border-b-rule min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+    // Both grid templates are complete literal class names: Tailwind only
+    // generates CSS for class names it finds written out in the source.
+    <div
+      data-narrow={narrow || undefined}
+      className={`grid grid-cols-1 border-t border-rule-strong border-b border-b-rule ${
+        narrow ? 'min-[900px]:grid-cols-[12rem_minmax(0,1fr)]' : 'min-[900px]:grid-cols-[minmax(0,1fr)_minmax(0,3fr)]'
+      }`}
+    >
       <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
-        <Toolbar mode={mode} onMode={setMode} sort={sort} onSort={setSort} jobSort={jobSort} onJobSort={setJobSort} />
-        {searchOpen && (
-          <SearchLine
-            inputRef={searchRef}
-            value={inbox.query}
-            onChange={inbox.setQuery}
-            count={mode === 'job' ? (inbox.jobs?.length ?? 0) : rows.length}
-            unit={mode === 'job' ? 'jobs' : 'emails'}
-            onClose={() => {
-              inbox.setQuery('')
-              setSearchOpen(false)
-            }}
-          />
-        )}
-        {top}
+        <Toolbar
+          mode={mode}
+          onMode={setMode}
+          sort={sort}
+          onSort={setSort}
+          jobSort={jobSort}
+          onJobSort={setJobSort}
+          narrow={narrow}
+          onNarrow={toggleNarrow}
+        />
+        <SearchLine
+          inputRef={searchRef}
+          value={inbox.query}
+          onChange={inbox.setQuery}
+          count={mode === 'job' ? (inbox.jobs?.length ?? 0) : rows.length}
+          unit={mode === 'job' ? 'jobs' : 'emails'}
+          narrow={narrow}
+          onClose={() => {
+            inbox.setQuery('')
+            searchRef.current?.blur()
+          }}
+        />
+        {!narrow && top}
         {mode === 'job' ? (
-          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} />
+          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} narrow={narrow} />
         ) : (
           <>
         {checking.length > 0 ? (
-          <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold}>
-            <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+          <Section name="checking" count={checking.length} folded={folded.has('checking')} onToggle={toggleFold} narrow={narrow}>
+            <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
         ) : (
           connected &&
@@ -189,8 +211,15 @@ export default function Inbox({ inbox, top, connected }: Props) {
           )
         )}
         {autoRows.length > 0 && (
-          <Section name="auto" count={autoRows.length} folded={folded.has('auto')} onToggle={toggleFold} top={checking.length > 0 || connected || !!top}>
-            <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+          <Section
+            name="auto"
+            count={autoRows.length}
+            folded={folded.has('auto')}
+            onToggle={toggleFold}
+            narrow={narrow}
+            top={checking.length > 0 || connected || !!top}
+          >
+            <RowList rows={autoRows} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
         )}
         {checked.length > 0 && (
@@ -199,16 +228,17 @@ export default function Inbox({ inbox, top, connected }: Props) {
             count={checked.length}
             folded={folded.has('checked')}
             onToggle={toggleFold}
+            narrow={narrow}
             top={checking.length > 0 || autoRows.length > 0 || connected || !!top}
           >
-            <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+            <RowList rows={checked} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} narrow={narrow} />
           </Section>
         )}
         {inbox.searched && rows.length === 0 && (
           <p className="py-6 pr-5 pl-6 text-meta text-text-dim">nothing matches “{inbox.searched}”.</p>
         )}
         {/* Ignored mail is never searched, so its line steps aside. */}
-        {!inbox.searched && <IgnoredLine
+        {!inbox.searched && !narrow && <IgnoredLine
           ignored={inbox.ignored ?? []}
           open={showIgnored}
           onToggle={() => setShowIgnored((x) => !x)}
@@ -248,10 +278,27 @@ function Toolbar(props: {
   onSort: (s: MailSort) => void
   jobSort: JobSort
   onJobSort: (s: JobSort) => void
+  narrow: boolean
+  onNarrow: () => void
 }) {
   const { mode, onMode } = props
+  // The fold toggle: « folds the list to a strip, » opens it again.
+  const fold = (
+    <button
+      type="button"
+      onClick={props.onNarrow}
+      aria-pressed={props.narrow}
+      aria-label={props.narrow ? 'expand the list ([)' : 'collapse the list ([)'}
+      title="["
+      className="h-7 shrink-0 cursor-pointer appearance-none bg-transparent px-1.5 text-[0.71875rem] text-text-muted hover:text-text"
+    >
+      {props.narrow ? '[ » ]' : '[ « ]'}
+    </button>
+  )
+  if (props.narrow)
+    return <div className="flex h-11 items-center justify-end border-b border-rule pr-3">{fold}</div>
   return (
-    <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-rule pr-5 pl-[1.125rem] whitespace-nowrap">
+    <div className="flex h-11 items-center gap-1 overflow-x-auto border-b border-rule pr-3 pl-[1.125rem] whitespace-nowrap">
       <Seg on={mode === 'email'} onClick={() => onMode('email')}>
         [ by email ]
       </Seg>
@@ -275,6 +322,7 @@ function Toolbar(props: {
               {label}
             </Seg>
           ))}
+      <span className="ml-1.5">{fold}</span>
     </div>
   )
 }
@@ -287,12 +335,14 @@ function JobList({
   currentId,
   onOpen,
   query,
+  narrow,
 }: {
   jobs: InboxJob[]
   sort: JobSort
   currentId: number | null
   onOpen: (applicationId: number) => void
   query: string
+  narrow: boolean
 }) {
   const companies = new Map<string, InboxJob[]>()
   for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
@@ -310,9 +360,7 @@ function JobList({
         // Each group is the sticky header's containing block, so the next
         // company's header pushes this one up instead of overlapping it.
         <div key={co} className="border-b border-rule">
-          <CompanyHeader>
-            <Hl text={co} query={query} />
-          </CompanyHeader>
+          <CompanyHeader>{narrow ? cut(co) : <Hl text={co} query={query} />}</CompanyHeader>
           <ul className="m-0 list-none p-0 pb-2">
             {js.map((j) => {
               const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
@@ -335,9 +383,9 @@ function JobList({
                         {j.status}
                       </span>
                     </span>
-                    <span className="mt-1 block text-[0.65625rem] text-text-dim">
-                      {j.emails} {j.emails === 1 ? 'email' : 'emails'}
-                      {j.unread > 0 && <span className="text-text"> · {j.unread} unread</span>}
+                    <span className="mt-1 block truncate text-[0.65625rem] text-text-dim">
+                      {j.emails} {narrow ? '' : j.emails === 1 ? 'email' : 'emails'}
+                      {j.unread > 0 && <span className="text-text"> · {j.unread}{narrow ? '' : ' unread'}</span>}
                     </span>
                   </button>
                 </li>
@@ -391,6 +439,7 @@ function Section({
   count,
   folded,
   onToggle,
+  narrow = false,
   top = false,
   children,
 }: {
@@ -398,6 +447,7 @@ function Section({
   count: number
   folded: boolean
   onToggle: (s: FoldKey) => void
+  narrow?: boolean
   top?: boolean
   children: ReactNode
 }) {
@@ -407,12 +457,16 @@ function Section({
         type="button"
         onClick={() => onToggle(name)}
         aria-expanded={!folded}
-        className={`flex h-9 w-full cursor-pointer items-center border-b border-rule bg-bg pr-5 pl-6 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase hover:text-text ${
+        className={`flex h-9 w-full cursor-pointer items-center border-b border-rule bg-bg pr-3 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase hover:text-text ${
+          narrow ? 'pl-3' : 'pl-6'
+        } ${
           top ? 'border-t' : ''
         }`}
       >
         <h2 className="font-mono">
-          {folded ? '+ ' : '- '}// {name}
+          {/* Narrow: the same header without the "// ". */}
+          {folded ? '+ ' : '- '}
+          {narrow ? name : `// ${name}`}
         </h2>
         <span className="ml-auto text-micro tracking-[0.02em] text-text-dim normal-case">{count}</span>
       </button>
@@ -449,6 +503,7 @@ function SearchLine({
   onChange,
   count,
   unit,
+  narrow,
   onClose,
 }: {
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -456,11 +511,16 @@ function SearchLine({
   onChange: (v: string) => void
   count: number
   unit: string
+  narrow: boolean
   onClose: () => void
 }) {
   return (
-    <div className="flex h-9 items-center gap-3 border-b border-rule bg-bg pr-5 pl-6">
-      <label htmlFor="inbox-search" className="shrink-0 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase">
+    <div className={`flex h-9 items-center gap-3 border-b border-rule bg-bg pr-3 ${narrow ? 'pl-3' : 'pl-6'}`}>
+      {/* Narrow: the label is still there for screen readers, just not drawn. */}
+      <label
+        htmlFor="inbox-search"
+        className={narrow ? 'sr-only' : 'shrink-0 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase'}
+      >
         // search
       </label>
       <input
@@ -477,14 +537,12 @@ function SearchLine({
             onClose()
           }
         }}
-        placeholder="company, role, subject, sender, body"
+        placeholder={narrow ? '/ search' : 'company, role, subject, sender, body'}
         autoComplete="off"
         spellCheck={false}
         className="h-6 min-w-0 flex-1 appearance-none border-0 border-b border-rule-strong bg-transparent px-0 text-meta text-text outline-none placeholder:text-text-dim focus:border-text"
       />
-      <span className="shrink-0 text-micro text-text-dim">
-        {value.trim() ? `${count} ${unit}` : 'esc to close'}
-      </span>
+      {!narrow && <span className="shrink-0 text-micro text-text-dim">{value.trim() ? `${count} ${unit}` : '/ to search'}</span>}
     </div>
   )
 }
@@ -516,17 +574,23 @@ function RowList({
   openId,
   onOpen,
   query,
+  narrow,
 }: {
   rows: InboxRow[]
   openId: number | null
   onOpen: (id: number) => void
   query: string
+  narrow: boolean
 }) {
   return (
     <ul className="m-0 list-none p-0">
       {rows.map((r) => (
         <li key={r.id} className="border-b border-rule">
-          <Row row={r} current={r.id === openId} onOpen={onOpen} query={query} />
+          {narrow ? (
+            <NarrowRow row={r} current={r.id === openId} onOpen={onOpen} />
+          ) : (
+            <Row row={r} current={r.id === openId} onOpen={onOpen} query={query} />
+          )}
         </li>
       ))}
     </ul>
@@ -558,10 +622,13 @@ function Row({ row, current, onOpen, query }: { row: InboxRow; current: boolean;
           aria-label={unread ? 'unread' : 'read'}
           className={`size-[0.3125rem] shrink-0 ${unread ? 'bg-text' : 'bg-transparent'}`}
         />
-        <span className={`font-serif text-[1.1875rem] leading-[1.05] lowercase ${unread ? 'text-text' : 'text-text-muted'}`}>
+        {/* min-w-0 + truncate: a long company ends in … instead of
+            pushing the score off the row (flex items won't shrink below
+            their content without min-w-0). */}
+        <span className={`min-w-0 truncate font-serif text-[1.1875rem] leading-[1.05] lowercase ${unread ? 'text-text' : 'text-text-muted'}`}>
           <Hl text={row.company ?? '—'} query={query} />
         </span>
-        <span data-color={color ?? undefined} className={`text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
+        <span data-color={color ?? undefined} className={`shrink-0 text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
           {eventLabel(row.event_type)}
         </span>
         {row.score !== null && (
@@ -579,6 +646,50 @@ function Row({ row, current, onOpen, query }: { row: InboxRow; current: boolean;
       </span>
     </button>
   )
+}
+
+// A row of the collapsed list: the unread dot and the company cut to ten
+// characters, then the stage colour (a diamond, as on the timeline) where
+// the subject was. Same paddings and line boxes as `Row`, so folding the
+// list never moves a row.
+function NarrowRow({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen: (id: number) => void }) {
+  const color = eventColor(row.event_type)
+  const unread = !row.read
+  const dim = row.event_type === 'rejection'
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(row.id)}
+      aria-current={current || undefined}
+      aria-label={`${row.company ?? '—'}, ${eventLabel(row.event_type)}${unread ? ', unread' : ''}`}
+      title={row.company ?? undefined}
+      data-inbox-row={row.id}
+      className={`block w-full cursor-pointer appearance-none pt-[0.8125rem] pr-3 pb-3 pl-3 text-left text-text ${
+        current ? 'bg-bg-active outline outline-text -outline-offset-1' : 'bg-transparent hover:bg-bg-active'
+      }`}
+    >
+      <span className="flex items-center gap-2.5">
+        <span aria-hidden className={`size-[0.3125rem] shrink-0 ${unread ? 'bg-text' : 'bg-transparent'}`} />
+        <span className={`font-serif text-[1.1875rem] leading-[1.05] whitespace-nowrap lowercase ${unread ? 'text-text' : 'text-text-muted'}`}>
+          {cut(row.company ?? '—')}
+        </span>
+      </span>
+      {/* Same text size as Row's subject line, so the line box (and the
+          row) is the same height; the diamond sits in it. */}
+      <span aria-hidden className="mt-[0.4375rem] flex items-center pl-[0.9375rem] text-[0.6875rem]">
+        <span
+          data-color={color ?? undefined}
+          className={`block size-1.5 rotate-45 ${color ? 'bg-(--c)' : dim ? 'bg-text-dim' : 'bg-text-muted'}`}
+        />
+        &#8203;
+      </span>
+    </button>
+  )
+}
+
+/** A company name cut to ten characters, with … when it was longer. */
+function cut(s: string): string {
+  return s.length > 10 ? `${s.slice(0, 10)}…` : s
 }
 
 // The one quiet line under all mail: "n ignored". It opens the ignored

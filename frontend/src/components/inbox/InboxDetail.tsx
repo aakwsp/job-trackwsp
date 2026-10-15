@@ -497,7 +497,9 @@ function NewJobForm({ value, onChange, onSave, onCancel }: { value: NewJob; onCh
   const fields: { k: keyof NewJob; label: string; ph: string }[] = [
     { k: 'company', label: 'company', ph: 'required' },
     { k: 'title', label: 'role', ph: 'required' },
-    { k: 'city', label: 'city', ph: 'optional' },
+    // Free text; may name several ("Waterloo or Toronto"). Splitting
+    // those into cities is JT-38.
+    { k: 'city', label: 'city', ph: 'optional, e.g. waterloo or toronto' },
     { k: 'req_id', label: 'req id', ph: 'optional' },
     { k: 'url', label: 'url', ph: 'optional, https://…' },
   ]
