@@ -107,6 +107,32 @@ insert a new row.
   `job-trackwsp`, user `gemini-api-key`), never logged or in a file.
 - `application_events` — the per-application timeline; the latest event
   determines `applications.status`.
+- `email_matches` — JT-16 (`src-tauri/src/routing/`): how each extracted
+  email was matched and routed. Matching: req id exact → company + role →
+  company only; company from the extracted name or the sender's domain
+  (aliases like RBC = Royal Bank of Canada; ATS and mail-provider domains
+  are not evidence); a different req id rules an application out. The score
+  is built from evidence (req id 0.40, company 0.25, domain 0.15, role up to
+  0.25, single candidate 0.10, event date 0.05) with Gemini's confidence
+  only 0.05, and every part is stored as a reason. The stored body is
+  scanned too, deterministically: an application's req id (0.40), exact
+  title (0.20) or city (0.05) found in it is evidence, and narrows several
+  candidates when exactly one has it. Still ambiguous → one Gemini call
+  (`routing/picker.rs`) asks which candidate, or none; a pick narrows and
+  adds 0.10 in place of the single-candidate bonus, so it can never reach
+  auto alone. Only `extracted` / `checking` mail is sent for this; answers
+  are cached in `llm_match_hints` per candidate set (not by dry runs).
+  Auto needs exactly one match and ≥ 0.80 for anything that writes a stage
+  event, or ≥ 0.60 for attach-only actions with a real single candidate (not
+  one resting on a Gemini pick); ambiguous, unmatched, offers, reopening a closed
+  application → `checking`. Auto never moves an application backwards, never
+  duplicates a stage that's already recorded (it attaches to that event),
+  never creates an application (a matching posting is only suggested), and
+  writes stage events through `applications::write_email_event`, so undo
+  removes exactly that event. Runs oldest → newest, after each extraction
+  run and whenever applications change, **only once `settings.routing_live`
+  = '1'** (live since 2026-10-15); `routing::run(.., dry = true)` decides and simulates without
+  writing. Emails the user undid / edited / rejected are never auto again.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
   `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the

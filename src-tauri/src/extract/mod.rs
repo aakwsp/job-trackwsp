@@ -253,7 +253,8 @@ pub fn run(
     result
 }
 
-fn model(pool: &SqlitePool) -> Result<String, String> {
+/// The model id: the `llm_model` setting, else `DEFAULT_MODEL`.
+pub fn model(pool: &SqlitePool) -> Result<String, String> {
     let m: Option<String> = block_on(sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(MODEL_KEY).fetch_optional(pool))
         .map_err(|e| e.to_string())?;
     Ok(m.filter(|m| !m.trim().is_empty()).unwrap_or_else(|| DEFAULT_MODEL.to_string()))

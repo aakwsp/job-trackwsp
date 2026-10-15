@@ -177,6 +177,126 @@ pub async fn reject(pool: &SqlitePool, id: i64) -> Result<ApplicationRow, JobsEr
     get(pool, id).await
 }
 
+/// Writes a stage event that came from an email (JT-16), inside the
+/// caller's transaction, and recomputes the status like every other event
+/// write. Returns the new event's id.
+///
+/// `occurred_at` is the email's date, but never earlier than the
+/// application's latest event: the status is "the latest event", so an
+/// event dated before (say) a manual "applied" clicked later would
+/// silently not change the stage. Routing only writes forward moves, so
+/// this only ever nudges a date later, never reorders the timeline.
+pub async fn write_email_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+    kind: &str,
+    occurred_at: &str,
+    email_id: i64,
+) -> Result<i64, JobsError> {
+    let latest: Option<String> =
+        sqlx::query_scalar("SELECT MAX(occurred_at) FROM application_events WHERE application_id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let at = match latest {
+        Some(l) if l.as_str() > occurred_at => l,
+        _ => occurred_at.to_string(),
+    };
+    let event_id: i64 = sqlx::query_scalar(
+        "INSERT INTO application_events (application_id, type, occurred_at, origin, email_id)
+         VALUES (?, ?, ?, 'email', ?) RETURNING id",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(at)
+    .bind(email_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    recompute_status(tx, id).await?;
+    Ok(event_id)
+}
+
+/// Removes one specific event (an email's auto-applied one, on undo) and
+/// recomputes the status from what's left, in the caller's transaction.
+/// Refuses to remove an application's only event.
+pub async fn remove_event(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i64) -> Result<(), JobsError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+    if count <= 1 {
+        return Err(JobsError::BadTransition("can't remove an application's only event".into()));
+    }
+    let removed = sqlx::query("DELETE FROM application_events WHERE id = ? AND application_id = ?")
+        .bind(event_id)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    if removed == 0 {
+        return Err(JobsError::BadTransition(format!("event {event_id} isn't on application {id}")));
+    }
+    recompute_status(tx, id).await
+}
+
+/// Unlinks an application from a posting it was wrongly attached to and
+/// gives it its own company and title (as an application added by hand).
+/// Its events, notes and dates stay as they are.
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn detach_from_posting(pool: &SqlitePool, id: i64, company: &str, title: &str) -> Result<ApplicationRow, JobsError> {
+    sqlx::query(
+        "UPDATE applications SET job_id = NULL, company = ?, title = ?,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+         WHERE id = ?",
+    )
+    .bind(company)
+    .bind(title)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    get(pool, id).await
+}
+
+/// Records a stage event that happened in the past (a rejection you heard
+/// about elsewhere, say), dated `occurred_at`, origin manual, and
+/// recomputes the status. Refuses a date before the application's latest
+/// event: the status is "the latest event", so such an event would land in
+/// the middle of the timeline and silently not change anything.
+// Only the one-off backfill runner calls this so far; a UI for dated
+// events can come with INBOX (JT-18).
+#[cfg_attr(not(test), allow(dead_code))]
+pub async fn record_event_at(
+    pool: &SqlitePool,
+    id: i64,
+    kind: &str,
+    occurred_at: &str,
+) -> Result<ApplicationRow, JobsError> {
+    let mut tx = pool.begin().await?;
+    let latest: Option<String> =
+        sqlx::query_scalar("SELECT MAX(occurred_at) FROM application_events WHERE application_id = ?")
+            .bind(id)
+            .fetch_one(&mut *tx)
+            .await?;
+    if latest.as_deref().is_some_and(|l| l > occurred_at) {
+        return Err(JobsError::BadTransition(format!(
+            "{occurred_at} is before this application's latest event ({})",
+            latest.unwrap_or_default()
+        )));
+    }
+    sqlx::query(
+        "INSERT INTO application_events (application_id, type, occurred_at, origin)
+         VALUES (?, ?, ?, 'manual')",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(occurred_at)
+    .execute(&mut *tx)
+    .await?;
+    recompute_status(&mut tx, id).await?;
+    tx.commit().await?;
+    get(pool, id).await
+}
+
 /// One step back: removes the latest event and recomputes the status from
 /// what's left, in one transaction. Removing rather than writing a
 /// backwards event keeps the timeline truthful. This is both the record's
@@ -377,6 +497,95 @@ mod tests {
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn record_event_at_dates_it_and_refuses_the_past() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            let id = add(&pool, "AMD", "Graphics Intern", Some("2026-09-15")).await.unwrap().id;
+            let a = record_event_at(&pool, id, "rejected", "2026-09-21T12:00:00Z").await.unwrap();
+            assert_eq!(a.status, "rejected");
+            assert_eq!(a.events.last().unwrap().occurred_at, "2026-09-21T12:00:00Z");
+            assert_eq!(a.events.last().unwrap().origin, "manual");
+            // Before the latest event: refused, nothing written.
+            assert!(record_event_at(&pool, id, "interview", "2026-09-01T12:00:00Z").await.is_err());
+            assert_eq!(list(&pool).await.unwrap()[0].events.len(), 2);
+        });
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One-off backfill on the real database from a JSON plan (see the
+    /// JT-16 notes). Not run by default:
+    ///   JT_DB_DIR=... JT_PLAN=plan.json cargo test --lib applications::tests::apply_backfill_plan -- --ignored --nocapture
+    /// Plan: {"from_postings": [[job_id, applied_at]], "manual": [{company, title, applied_on, note}],
+    ///        "rejections": [{"job_id"|"manual_title", "at"}]}. Skips anything already done.
+    #[test]
+    #[ignore]
+    fn apply_backfill_plan() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let plan: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(std::env::var("JT_PLAN").expect("JT_PLAN")).unwrap()).unwrap();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            for item in plan["from_postings"].as_array().unwrap() {
+                let (job, at) = (item[0].as_i64().unwrap(), item[1].as_str().unwrap());
+                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM applications WHERE job_id = ?")
+                    .bind(job).fetch_one(&pool).await.unwrap();
+                if exists > 0 { println!("job {job}: already has an application, skipped"); continue; }
+                crate::jobs::set_applied_at(&pool, job, true, Some(at)).await.unwrap();
+                println!("job {job}: applied {at}");
+            }
+            for m in plan["manual"].as_array().unwrap() {
+                let (company, title) = (m["company"].as_str().unwrap(), m["title"].as_str().unwrap());
+                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM applications WHERE job_id IS NULL AND company = ? AND title = ?")
+                    .bind(company).bind(title).fetch_one(&pool).await.unwrap();
+                if exists > 0 { println!("{company} {title}: already exists, skipped"); continue; }
+                let a = add(&pool, company, title, m["applied_on"].as_str()).await.unwrap();
+                save_notes(&pool, a.id, m["note"].as_str().unwrap_or("")).await.unwrap();
+                println!("manual #{}: {company} — {title}, applied {:?}", a.id, a.applied_at);
+            }
+            for d in plan["detach"].as_array().map(|a| a.as_slice()).unwrap_or(&[]) {
+                let id = d["application_id"].as_i64().unwrap();
+                let job: Option<i64> = sqlx::query_scalar("SELECT job_id FROM applications WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
+                if job.is_none() { println!("application {id}: already detached, skipped"); continue; }
+                let a = detach_from_posting(&pool, id, d["company"].as_str().unwrap(), d["title"].as_str().unwrap()).await.unwrap();
+                let note = d["note"].as_str().unwrap_or("");
+                let notes = match a.notes.as_deref() { Some(n) if !n.is_empty() => format!("{n}\n{note}"), _ => note.to_string() };
+                save_notes(&pool, id, &notes).await.unwrap();
+                println!("application {id}: detached from job {}, now {} — {}", job.unwrap(), a.company, a.title);
+            }
+            for r in plan["rejections"].as_array().unwrap() {
+                let id: i64 = match (r.get("job_id"), r.get("manual_title"), r.get("application_id")) {
+                    (_, _, Some(a)) => a.as_i64().unwrap(),
+                    (Some(j), _, _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(j.as_i64().unwrap()).fetch_one(&pool).await.unwrap(),
+                    (_, Some(t), _) => sqlx::query_scalar("SELECT id FROM applications WHERE job_id IS NULL AND title = ?").bind(t.as_str().unwrap()).fetch_one(&pool).await.unwrap(),
+                    _ => panic!("rejection needs job_id or manual_title"),
+                };
+                let status: String = sqlx::query_scalar("SELECT status FROM applications WHERE id = ?").bind(id).fetch_one(&pool).await.unwrap();
+                if status == "rejected" { println!("application {id}: already rejected, skipped"); continue; }
+                let a = record_event_at(&pool, id, "rejected", r["at"].as_str().unwrap()).await.unwrap();
+                println!("application {id}: {} at {}", a.status, a.events.last().unwrap().occurred_at);
+            }
+            if plan["redecode_bodies"].as_bool() == Some(true) {
+                // Plain-text bodies stored before entities were decoded
+                // there; only rows that still have a body and an entity.
+                let rows: Vec<(i64, String)> = sqlx::query_as(
+                    "SELECT id, body_text FROM emails WHERE body_text LIKE '%&%;%'",
+                ).fetch_all(&pool).await.unwrap();
+                let mut changed = 0;
+                for (id, body) in rows {
+                    let fixed = crate::mail::mime::decode_entities(&body);
+                    if fixed != body {
+                        sqlx::query("UPDATE emails SET body_text = ? WHERE id = ?").bind(fixed).bind(id).execute(&pool).await.unwrap();
+                        changed += 1;
+                    }
+                }
+                println!("bodies re-decoded: {changed}");
+            }
+        });
     }
 
     #[test]
