@@ -4,6 +4,7 @@ mod extract;
 mod gmail;
 mod jobs;
 mod mail;
+mod routing;
 mod sync;
 
 use std::time::Duration;
@@ -102,11 +103,15 @@ async fn list_jobs(
 /// Creates or removes the `applications` row for a job. Never writes `jobs`.
 #[tauri::command]
 async fn set_applied(
+    app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     job_id: i64,
     applied: bool,
 ) -> Result<(), jobs::JobsError> {
-    jobs::set_applied(&pool, job_id, applied).await
+    let result = jobs::set_applied(&pool, job_id, applied).await;
+    // Applications changed: emails waiting in checking may match now.
+    spawn_routing(app);
+    result
 }
 
 /// Saves the note on a job (applied or not). Blank clears it.
@@ -130,39 +135,55 @@ async fn list_applications(
 /// [ → next stage ]. Returns the updated application.
 #[tauri::command]
 async fn advance_stage(
+    app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     id: i64,
 ) -> Result<applications::ApplicationRow, jobs::JobsError> {
-    applications::advance(&pool, id).await
+    let result = applications::advance(&pool, id).await;
+    // Applications changed: emails waiting in checking may match now.
+    spawn_routing(app);
+    result
 }
 
 /// [ mark rejected ].
 #[tauri::command]
 async fn mark_rejected(
+    app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     id: i64,
 ) -> Result<applications::ApplicationRow, jobs::JobsError> {
-    applications::reject(&pool, id).await
+    let result = applications::reject(&pool, id).await;
+    // Applications changed: emails waiting in checking may match now.
+    spawn_routing(app);
+    result
 }
 
 /// [ undo ]: drops the latest event.
 #[tauri::command]
 async fn undo_event(
+    app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     id: i64,
 ) -> Result<applications::ApplicationRow, jobs::JobsError> {
-    applications::undo(&pool, id).await
+    let result = applications::undo(&pool, id).await;
+    // Applications changed: emails waiting in checking may match now.
+    spawn_routing(app);
+    result
 }
 
 /// [ + add application ] for something the scheduler never found.
 #[tauri::command]
 async fn add_application(
+    app: tauri::AppHandle,
     pool: tauri::State<'_, SqlitePool>,
     company: String,
     title: String,
     applied_on: Option<String>,
 ) -> Result<applications::ApplicationRow, jobs::JobsError> {
-    applications::add(&pool, &company, &title, applied_on.as_deref()).await
+    let result = applications::add(&pool, &company, &title, applied_on.as_deref()).await;
+    // Applications changed: emails waiting in checking may match now.
+    spawn_routing(app);
+    result
 }
 
 /// Notes on an application with no posting.
@@ -362,6 +383,8 @@ fn spawn_extraction(app: tauri::AppHandle) {
             log::error!("extraction stopped: {e}");
         }
         emit_mail_status(&app);
+        // Newly extracted emails: match and route them.
+        spawn_routing(app.clone());
     });
 }
 
@@ -404,6 +427,64 @@ fn spawn_mail_poller(app: tauri::AppHandle) {
         }
         std::thread::sleep(mail::POLL_INTERVAL);
     });
+}
+
+/// Re-runs matching/routing for extracted and checking emails (JT-16) on
+/// its own thread. Only once `routing_live` is set: until the user okays
+/// the dry run, nothing touches applications automatically.
+fn spawn_routing(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let pool = app.state::<SqlitePool>();
+        if !routing::is_live(&pool) {
+            return;
+        }
+        match routing::run(&app.state::<routing::RoutingState>(), &pool, false) {
+            Ok(rows) if !rows.is_empty() => {
+                let auto = rows.iter().filter(|r| r.decision.route == routing::Route::Auto).count();
+                log::info!("routing: {auto} auto, {} checking", rows.len() - auto);
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("routing failed: {e}"),
+        }
+    });
+}
+
+/// What routing would do, without writing anything (JT-16's dry run).
+#[tauri::command]
+async fn route_dry_run(app: tauri::AppHandle) -> Result<Vec<routing::RunRow>, String> {
+    off_main_thread(app, |app| routing::run(&app.state::<routing::RoutingState>(), &app.state::<SqlitePool>(), true), |e| e).await
+}
+
+/// INBOX (JT-18): apply a checking email to the matched application, or to
+/// `application_id`, or to an application created from `create_from_job`.
+#[tauri::command]
+async fn route_confirm(
+    app: tauri::AppHandle,
+    email_id: i64,
+    application_id: Option<i64>,
+    create_from_job: Option<i64>,
+) -> Result<(), String> {
+    off_main_thread(app, move |app| routing::confirm(&app.state::<SqlitePool>(), email_id, application_id, create_from_job), |e| e)
+        .await
+}
+
+/// INBOX: the extraction or match is wrong / doesn't matter.
+#[tauri::command]
+async fn route_reject(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
+    off_main_thread(app, move |app| routing::reject(&app.state::<SqlitePool>(), email_id), |e| e).await
+}
+
+/// INBOX: correct the extracted fields and/or the matched application.
+#[tauri::command]
+async fn route_edit(app: tauri::AppHandle, email_id: i64, edit: routing::Edit) -> Result<routing::Decision, String> {
+    off_main_thread(app, move |app| routing::edit(&app.state::<SqlitePool>(), email_id, edit), |e| e).await
+}
+
+/// INBOX: undo an auto-applied (or confirmed) email; removes the event it
+/// wrote.
+#[tauri::command]
+async fn route_undo(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
+    off_main_thread(app, move |app| routing::undo(&app.state::<SqlitePool>(), email_id), |e| e).await
 }
 
 /// Opens a posting in the system browser. Done from Rust rather than
@@ -471,7 +552,12 @@ pub fn run() {
             mail_restore,
             llm_key_status,
             llm_get_key,
-            llm_save_key
+            llm_save_key,
+            route_dry_run,
+            route_confirm,
+            route_reject,
+            route_edit,
+            route_undo
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -496,6 +582,7 @@ pub fn run() {
             app.manage(gmail::GmailState::new(Box::new(gmail::store::KeyringStore)));
             app.manage(mail::MailState::default());
             app.manage(extract::ExtractState::default());
+            app.manage(routing::RoutingState::default());
             spawn_mail_poller(app.handle().clone());
 
             Ok(())

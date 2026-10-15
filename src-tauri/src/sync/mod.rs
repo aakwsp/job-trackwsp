@@ -12,7 +12,7 @@
 //! gain from making this async and a real dependency to avoid by not doing
 //! so.
 
-mod matching;
+pub mod matching;
 
 use std::time::Duration;
 

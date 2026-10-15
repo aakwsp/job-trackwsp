@@ -107,6 +107,23 @@ insert a new row.
   `job-trackwsp`, user `gemini-api-key`), never logged or in a file.
 - `application_events` — the per-application timeline; the latest event
   determines `applications.status`.
+- `email_matches` — JT-16 (`src-tauri/src/routing/`): how each extracted
+  email was matched and routed. Matching: req id exact → company + role →
+  company only; company from the extracted name or the sender's domain
+  (aliases like RBC = Royal Bank of Canada; ATS and mail-provider domains
+  are not evidence); a different req id rules an application out. The score
+  is built from evidence (req id 0.40, company 0.25, domain 0.15, role up to
+  0.25, single candidate 0.10, event date 0.05) with Gemini's confidence
+  only 0.05, and every part is stored as a reason. ≥ 0.80 with exactly one
+  match → `auto`; ambiguous, unmatched, offers, reopening a closed
+  application → `checking`. Auto never moves an application backwards, never
+  duplicates a stage that's already recorded (it attaches to that event),
+  never creates an application (a matching posting is only suggested), and
+  writes stage events through `applications::write_email_event`, so undo
+  removes exactly that event. Runs oldest → newest, after each extraction
+  run and whenever applications change, **only once `settings.routing_live`
+  = '1'**; `routing::run(.., dry = true)` decides and simulates without
+  writing. Emails the user undid / edited / rejected are never auto again.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
   `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the

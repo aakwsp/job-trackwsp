@@ -177,6 +177,68 @@ pub async fn reject(pool: &SqlitePool, id: i64) -> Result<ApplicationRow, JobsEr
     get(pool, id).await
 }
 
+/// Writes a stage event that came from an email (JT-16), inside the
+/// caller's transaction, and recomputes the status like every other event
+/// write. Returns the new event's id.
+///
+/// `occurred_at` is the email's date, but never earlier than the
+/// application's latest event: the status is "the latest event", so an
+/// event dated before (say) a manual "applied" clicked later would
+/// silently not change the stage. Routing only writes forward moves, so
+/// this only ever nudges a date later, never reorders the timeline.
+pub async fn write_email_event(
+    tx: &mut Transaction<'_, Sqlite>,
+    id: i64,
+    kind: &str,
+    occurred_at: &str,
+    email_id: i64,
+) -> Result<i64, JobsError> {
+    let latest: Option<String> =
+        sqlx::query_scalar("SELECT MAX(occurred_at) FROM application_events WHERE application_id = ?")
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+    let at = match latest {
+        Some(l) if l.as_str() > occurred_at => l,
+        _ => occurred_at.to_string(),
+    };
+    let event_id: i64 = sqlx::query_scalar(
+        "INSERT INTO application_events (application_id, type, occurred_at, origin, email_id)
+         VALUES (?, ?, ?, 'email', ?) RETURNING id",
+    )
+    .bind(id)
+    .bind(kind)
+    .bind(at)
+    .bind(email_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    recompute_status(tx, id).await?;
+    Ok(event_id)
+}
+
+/// Removes one specific event (an email's auto-applied one, on undo) and
+/// recomputes the status from what's left, in the caller's transaction.
+/// Refuses to remove an application's only event.
+pub async fn remove_event(tx: &mut Transaction<'_, Sqlite>, id: i64, event_id: i64) -> Result<(), JobsError> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM application_events WHERE application_id = ?")
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await?;
+    if count <= 1 {
+        return Err(JobsError::BadTransition("can't remove an application's only event".into()));
+    }
+    let removed = sqlx::query("DELETE FROM application_events WHERE id = ? AND application_id = ?")
+        .bind(event_id)
+        .bind(id)
+        .execute(&mut **tx)
+        .await?
+        .rows_affected();
+    if removed == 0 {
+        return Err(JobsError::BadTransition(format!("event {event_id} isn't on application {id}")));
+    }
+    recompute_status(tx, id).await
+}
+
 /// One step back: removes the latest event and recomputes the status from
 /// what's left, in one transaction. Removing rather than writing a
 /// backwards event keeps the timeline truthful. This is both the record's

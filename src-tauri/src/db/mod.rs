@@ -82,6 +82,7 @@ mod tests {
             vec![
                 "application_events",
                 "applications",
+                "email_matches",
                 "emails",
                 "extractions",
                 "job_notes",
