@@ -1,8 +1,7 @@
 import { createContext, useCallback, useContext } from 'react'
 import { prefersReducedMotion } from './motion'
 
-// Scroll-in reveal for city bands and cards (DEFAULT / COMPACT only; LINE
-// rows never use this).
+// Scroll-in reveal for city bands, cards and LINE rows.
 //
 // One IntersectionObserver per page visit watches every unrevealed element.
 // When elements come within 300px of the bottom of the scroll area it

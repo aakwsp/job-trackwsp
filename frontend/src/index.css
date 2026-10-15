@@ -348,7 +348,7 @@
   animation: rise var(--enter-ms) var(--ease-expo) var(--d, 0ms) backwards;
 }
 
-/* `.rise` is for bands and cards (not LINE rows), driven by lib/reveal.ts:
+/* `.rise` is for bands, cards and LINE rows, driven by lib/reveal.ts:
    - `.rise` alone: waiting, hidden at the starting frame
    - `.is-in`: shown. Alone (fast scrolling, or already revealed earlier
      this visit) it just appears.
