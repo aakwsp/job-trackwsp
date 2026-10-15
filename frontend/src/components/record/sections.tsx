@@ -11,6 +11,7 @@ import {
   outlineButton,
   primaryButton,
   ghostButton,
+  Keyed,
   type Pad,
   type TagSpec,
 } from './parts'
@@ -272,11 +273,11 @@ function PrimaryAction({ m, pad }: SectionProps) {
   const action =
     !m.app && m.job ? (
       <button type="button" onClick={m.markApplied} className={primaryButton}>
-        [ mark applied ]
+        <Keyed label="mark applied" k="a" />
       </button>
     ) : m.next ? (
       <button type="button" onClick={m.advance} aria-label={`move to ${m.next}`} className={primaryButton}>
-        [ → next stage ]
+        <Keyed label="→ next stage" k="n" />
       </button>
     ) : null
   if (!action) return null
@@ -352,7 +353,7 @@ function noPostingText(app: Application | null): string {
 function OpenButton({ m }: { m: RecordModel }) {
   return (
     <button type="button" onClick={m.open} disabled={!m.job?.url} className={outlineButton}>
-      [ open posting ↗ ]
+      <Keyed label="open posting ↗" k="o" />
     </button>
   )
 }
@@ -455,7 +456,7 @@ function PostingActions({ m }: { m: RecordModel }) {
     return (
       <div className="flex flex-wrap gap-2">
         <button type="button" onClick={m.markApplied} className={primaryButton}>
-          [ mark applied ]
+          <Keyed label="mark applied" k="a" />
         </button>
         <OpenButton m={m} />
       </div>
@@ -489,7 +490,7 @@ export function ApplicationSection({ m, pad }: SectionProps) {
         <div className={`flex flex-wrap gap-2 pt-[1.375rem] ${pad}`}>
           {job && (
             <button type="button" onClick={m.markApplied} className={primaryButton}>
-              [ mark applied ]
+              <Keyed label="mark applied" k="a" />
             </button>
           )}
           <OpenButton m={m} />
@@ -550,17 +551,17 @@ export function ApplicationSection({ m, pad }: SectionProps) {
           <div className="flex flex-wrap items-center gap-2">
             {m.next && (
               <button type="button" onClick={m.advance} aria-label={`move to ${m.next}`} className={primaryButton}>
-                [ → next stage ]
+                <Keyed label="→ next stage" k="n" />
               </button>
             )}
             {m.canReject && (
               <button type="button" onClick={m.reject} className={outlineButton}>
-                [ mark rejected ]
+                <Keyed label="mark rejected" k="r" />
               </button>
             )}
             {m.canUndo && (
               <button type="button" onClick={m.undo} className={`${ghostButton} h-11 text-micro`}>
-                [ undo ]
+                <Keyed label="undo" k="u" />
               </button>
             )}
           </div>

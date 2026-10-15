@@ -20,6 +20,17 @@ export const primaryButton =
 export type Pad = string
 export const DRAWER_PAD: Pad = 'pr-8 pl-[2.1875rem]'
 
+// A button label with its keyboard shortcut as a dim suffix:
+// "[ mark applied · a ]". The same keys are listed in the hint line at the
+// bottom of the record.
+export function Keyed({ label, k }: { label: string; k: string }) {
+  return (
+    <>
+      [ {label} <span className="text-text-dim">· {k}</span> ]
+    </>
+  )
+}
+
 // A `// section` header band: full width, 36px, hairlines above and below.
 // `noTop` drops the top hairline where something directly above already
 // draws one.
