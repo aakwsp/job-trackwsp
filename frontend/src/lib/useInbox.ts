@@ -16,6 +16,14 @@ export function useInbox(active: boolean) {
   const [error, setError] = useState<string | null>(null)
   // Bumped by the events below; the effects re-fetch when it changes.
   const [version, setVersion] = useState(0)
+  // Search (JT-18). `query` is what's typed; `applied` follows it ~120ms
+  // later, so a burst of keystrokes is one search, not one per key.
+  const [query, setQuery] = useState('')
+  const [applied, setApplied] = useState('')
+  useEffect(() => {
+    const t = setTimeout(() => setApplied(query.trim()), 120)
+    return () => clearTimeout(t)
+  }, [query])
 
   useEffect(() => {
     if (!active) return
@@ -26,8 +34,9 @@ export function useInbox(active: boolean) {
   useEffect(() => {
     if (!active) return
     let stale = false
+    const q = applied || null
     api
-      .inboxList()
+      .inboxList(q)
       .then((r) => !stale && setRows(r))
       .catch((e) => !stale && setError(String(e)))
     api
@@ -35,13 +44,13 @@ export function useInbox(active: boolean) {
       .then((r) => !stale && setIgnored(r))
       .catch(() => {})
     api
-      .inboxJobs()
+      .inboxJobs(q)
       .then((r) => !stale && setJobs(r))
       .catch(() => {})
     return () => {
       stale = true
     }
-  }, [active, version])
+  }, [active, version, applied])
 
   useEffect(() => {
     if (!active || openId === null) return
@@ -74,5 +83,5 @@ export function useInbox(active: boolean) {
     }
   }
 
-  return { rows, ignored, jobs, openId, detail: detail && detail.email.id === openId ? detail : null, error, open, act, setError }
+  return { rows, ignored, jobs, query, setQuery, searched: applied, openId, detail: detail && detail.email.id === openId ? detail : null, error, open, act, setError }
 }

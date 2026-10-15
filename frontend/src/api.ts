@@ -73,7 +73,9 @@ export const llmGetKey = () => invoke<string | null>('llm_get_key')
 // ── INBOX (JT-18) ────────────────────────────────────────────────────────
 // Lists and detail come from Rust; every action is a routing command
 // (JT-16), so React never decides anything about the pipeline itself.
-export const inboxList = () => invoke<InboxRow[]>('inbox_list')
+// `query`: search text (Rust filters company, role, subject, sender and
+// body); null / blank = everything.
+export const inboxList = (query: string | null) => invoke<InboxRow[]>('inbox_list', { query })
 export const inboxIgnored = () => invoke<IgnoredRow[]>('inbox_ignored')
 export const inboxDetail = (emailId: number) => invoke<InboxDetail | null>('inbox_detail', { emailId })
 export const inboxSetRead = (emailId: number, read: boolean) => invoke<void>('inbox_set_read', { emailId, read })
@@ -86,5 +88,5 @@ export const routeEdit = (emailId: number, edit: RouteEdit) => invoke<unknown>('
 export const routeUndo = (emailId: number) => invoke<void>('route_undo', { emailId })
 // [ not ignored ]: re-fetches the email from Gmail and re-parses it.
 export const mailRestore = (gmailId: string) => invoke<void>('mail_restore', { gmailId })
-export const inboxJobs = () => invoke<InboxJob[]>('inbox_jobs')
+export const inboxJobs = (query: string | null) => invoke<InboxJob[]>('inbox_jobs', { query })
 export const appEmails = (applicationId: number) => invoke<TimelineNode[]>('app_emails', { applicationId })

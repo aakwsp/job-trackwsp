@@ -46,7 +46,7 @@ export default function EmailTimeline({ nodes, currentId = null, large = false, 
               aria-current={current || undefined}
               aria-label={`${eventLabel(n.event_type)}, ${localDay(n.received_at)}${done ? '' : ', still in checking'}`}
               data-color={color ?? undefined}
-              className={`relative flex shrink-0 cursor-pointer flex-col items-center text-text-muted hover:text-text ${large ? 'w-[9.375rem]' : 'w-28'}`}
+              className={`relative flex shrink-0 cursor-pointer appearance-none flex-col items-center bg-transparent text-text-muted hover:text-text ${large ? 'w-[9.375rem]' : 'w-28'}`}
             >
               <span
                 className={`flex items-center justify-center bg-bg-hover ${large ? 'size-7' : 'size-[1.375rem]'} ${

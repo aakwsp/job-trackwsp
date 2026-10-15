@@ -557,8 +557,13 @@ fn inbox_changed(app: &tauri::AppHandle) {
 
 /// Every email INBOX lists (never ignored or blocked), newest first.
 #[tauri::command]
-async fn inbox_list(app: tauri::AppHandle) -> Result<Vec<inbox::InboxRow>, String> {
-    off_main_thread(app, |app| inbox::list(&app.state::<SqlitePool>()).map_err(|e| e.to_string()), |e| e).await
+async fn inbox_list(app: tauri::AppHandle, query: Option<String>) -> Result<Vec<inbox::InboxRow>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::list(&app.state::<SqlitePool>(), query.as_deref()).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
 }
 
 /// The "n ignored" list: sender, subject, date only.
@@ -622,8 +627,13 @@ async fn inbox_open_in_gmail(app: tauri::AppHandle, email_id: i64) -> Result<(),
 
 /// INBOX's by-job list: applications with matched emails.
 #[tauri::command]
-async fn inbox_jobs(app: tauri::AppHandle) -> Result<Vec<inbox::JobRow>, String> {
-    off_main_thread(app, |app| inbox::jobs(&app.state::<SqlitePool>()).map_err(|e| e.to_string()), |e| e).await
+async fn inbox_jobs(app: tauri::AppHandle, query: Option<String>) -> Result<Vec<inbox::JobRow>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::jobs(&app.state::<SqlitePool>(), query.as_deref()).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
 }
 
 /// One application's email timeline, oldest first (the record's emails tab).

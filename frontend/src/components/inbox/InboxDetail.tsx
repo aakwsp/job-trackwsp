@@ -4,6 +4,7 @@ import type { InboxDetail, RouteEdit } from '../../types'
 import { eventColor, eventLabel, localDayTime } from '../../lib/inbox'
 import { outlineButton, primaryButton } from '../record/parts'
 import EmailTimeline from './EmailTimeline'
+import Select from '../Select'
 
 // The open email (design/inbox/Inbox.dc.html, right column): // email,
 // // extracted, // match, // actions. The body is plain text in a
@@ -183,18 +184,18 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
                         {f.key === 'event_type' ? eventLabel(f.v) : (f.v ?? '—')}
                       </span>
                     ) : f.key === 'event_type' ? (
-                      <select
-                        aria-label="event type"
+                      <Select
+                        label="event type"
                         value={edits.event_type ?? f.v ?? ''}
-                        onChange={(e) => setEdits({ ...edits, event_type: e.target.value })}
-                        className="h-8 w-full border border-rule-strong bg-bg px-2 text-meta text-text"
+                        onChange={(v) => setEdits({ ...edits, event_type: v })}
+                        className="h-8 w-full"
                       >
                         {TYPES.map((t) => (
                           <option key={t} value={t}>
                             {eventLabel(t)}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     ) : (
                       <>
                         <input
@@ -272,11 +273,11 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
       )}
       {changing && m && (
         <div className="flex flex-wrap items-center gap-2 px-8 pt-3">
-          <select
-            aria-label="match to application"
+          <Select
+            label="match to application"
             value={pickApp ?? ''}
-            onChange={(e) => setPickApp(Number(e.target.value))}
-            className="h-11 min-w-0 flex-1 border border-rule-strong bg-bg px-2 text-meta text-text"
+            onChange={(v) => setPickApp(Number(v))}
+            className="h-11 min-w-0 flex-1"
           >
             {/* Candidates first, then every other application. */}
             {[...m.candidates, ...detail.applications.filter((a) => !m.candidates.some((c) => c.id === a.id))].map((a) => (
@@ -284,7 +285,7 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
                 {a.company.toLowerCase()} — {a.title.toLowerCase()} ({a.status})
               </option>
             ))}
-          </select>
+          </Select>
           <button
             type="button"
             disabled={pickApp === null}
@@ -311,7 +312,9 @@ export default function InboxDetailPane({ detail, act, large, onOpenEmail }: Pro
                 type="button"
                 onClick={confirm}
                 disabled={!canConfirm}
-                className={`${primaryButton} disabled:cursor-default disabled:opacity-40`}
+                // Disabled: a dim outline on the dark surface, not a faded
+                // parchment block (pale text on a light box).
+                className={`${primaryButton} disabled:cursor-default disabled:border-rule-strong disabled:bg-transparent disabled:font-normal disabled:text-text-dim disabled:hover:opacity-100`}
               >
                 {!app && m?.suggested_job ? '[ create application from posting ]' : '[ confirm ]'}
               </button>

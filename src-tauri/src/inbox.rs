@@ -33,6 +33,25 @@ pub struct InboxRow {
     pub application_id: Option<i64>,
 }
 
+/// `%text%` for LIKE, with LIKE's own wildcards escaped (`\\` is the
+/// ESCAPE character in the queries). None for a blank search.
+fn like_pattern(query: Option<&str>) -> Option<String> {
+    let q = query?.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let escaped: String = q
+        .chars()
+        .flat_map(|c| match c {
+            '%' | '_' | '\\' => vec!['\\', c],
+            c => vec![c],
+        })
+        .collect();
+    Some(format!("%{escaped}%"))
+}
+
+// Search (JT-18): company, role, subject, sender and body, case-insensitive
+// (SQLite's LIKE is, for ASCII). `?1` is the pattern or NULL for no search.
 const LIST_SQL: &str = "
     SELECT e.id, e.status,
            COALESCE(j.company, a.company, x.company, e.from_addr) AS company,
@@ -44,12 +63,19 @@ const LIST_SQL: &str = "
     LEFT JOIN applications a ON a.id = m.application_id
     LEFT JOIN jobs j ON j.id = a.job_id
     WHERE e.status NOT IN ('ignored', 'blocked')
+      AND (?1 IS NULL
+           OR COALESCE(j.company, '') LIKE ?1 ESCAPE '\\' OR COALESCE(a.company, '') LIKE ?1 ESCAPE '\\'
+           OR COALESCE(x.company, '') LIKE ?1 ESCAPE '\\'
+           OR COALESCE(j.title, '') LIKE ?1 ESCAPE '\\' OR COALESCE(a.title, '') LIKE ?1 ESCAPE '\\'
+           OR COALESCE(x.role, '') LIKE ?1 ESCAPE '\\'
+           OR COALESCE(e.subject, '') LIKE ?1 ESCAPE '\\' OR COALESCE(e.from_addr, '') LIKE ?1 ESCAPE '\\'
+           OR COALESCE(e.body_text, '') LIKE ?1 ESCAPE '\\')
     ORDER BY e.received_at DESC, e.id DESC";
 
 /// Every email INBOX shows, newest first (the UI re-sorts and splits off
-/// `checking`).
-pub fn list(pool: &SqlitePool) -> Result<Vec<InboxRow>, sqlx::Error> {
-    block_on(sqlx::query_as::<_, InboxRow>(LIST_SQL).fetch_all(pool))
+/// `checking`), optionally only those matching a search.
+pub fn list(pool: &SqlitePool, query: Option<&str>) -> Result<Vec<InboxRow>, sqlx::Error> {
+    block_on(sqlx::query_as::<_, InboxRow>(LIST_SQL).bind(like_pattern(query)).fetch_all(pool))
 }
 
 /// An ignored email: only what the "n ignored" list shows.
@@ -172,8 +198,10 @@ pub struct JobRow {
     pub latest: Option<String>,
 }
 
-/// Every application with at least one matched email.
-pub fn jobs(pool: &SqlitePool) -> Result<Vec<JobRow>, sqlx::Error> {
+/// Every application with at least one matched email; with a search, only
+/// emails that match count (an application whose company or role matches
+/// counts all of them).
+pub fn jobs(pool: &SqlitePool, query: Option<&str>) -> Result<Vec<JobRow>, sqlx::Error> {
     block_on(
         sqlx::query_as(
             "SELECT a.id AS application_id, COALESCE(j.company, a.company, '') AS company,
@@ -183,9 +211,16 @@ pub fn jobs(pool: &SqlitePool) -> Result<Vec<JobRow>, sqlx::Error> {
              JOIN emails e ON e.id = m.email_id AND e.status IN ('auto', 'confirmed', 'checking')
              JOIN applications a ON a.id = m.application_id
              LEFT JOIN jobs j ON j.id = a.job_id
+             LEFT JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
+             WHERE ?1 IS NULL
+                OR COALESCE(j.company, a.company, '') LIKE ?1 ESCAPE '\\' OR COALESCE(j.title, a.title, '') LIKE ?1 ESCAPE '\\'
+                OR COALESCE(x.company, '') LIKE ?1 ESCAPE '\\' OR COALESCE(x.role, '') LIKE ?1 ESCAPE '\\'
+                OR COALESCE(e.subject, '') LIKE ?1 ESCAPE '\\' OR COALESCE(e.from_addr, '') LIKE ?1 ESCAPE '\\'
+                OR COALESCE(e.body_text, '') LIKE ?1 ESCAPE '\\'
              GROUP BY a.id
              ORDER BY latest DESC",
         )
+        .bind(like_pattern(query))
         .fetch_all(pool),
     )
 }
@@ -331,7 +366,7 @@ mod tests {
                 .bind(a).execute(&pool).await.unwrap();
         });
 
-        let rows = list(&pool).unwrap();
+        let rows = list(&pool, None).unwrap();
         let ids: Vec<i64> = rows.iter().map(|r| r.id).collect();
         assert_eq!(ids, [c, p, a]); // newest first, no ignored / blocked
         let auto = rows.iter().find(|r| r.id == a).unwrap();
@@ -371,13 +406,45 @@ mod tests {
         assert_eq!(ids, [first, second]); // oldest first; the rejected one is out
         assert_eq!((t[0].status.as_str(), t[1].event_type.as_deref()), ("auto", Some("interview")));
 
-        let j = jobs(&pool).unwrap();
+        let j = jobs(&pool, None).unwrap();
         assert_eq!(j.len(), 2);
         assert_eq!((j[0].company.as_str(), j[0].emails), ("Beta", 1)); // latest activity first
         assert_eq!((j[1].emails, j[1].unread), (2, 1));
 
         // The detail carries its application's timeline.
         assert_eq!(detail(&pool, second).unwrap().unwrap().timeline.len(), 2);
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn search_covers_company_role_subject_sender_and_body() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let a = email(&pool, "a", "auto", "2026-09-01T00:00:00Z");
+        let b = email(&pool, "b", "checking", "2026-09-02T00:00:00Z");
+        let hidden = email(&pool, "h", "ignored", "2026-09-03T00:00:00Z");
+        block_on(async {
+            sqlx::query("UPDATE emails SET body_text = 'Your Robinhood interview is booked' WHERE id = ?").bind(b).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE emails SET body_text = 'Robinhood too', subject = '100% match' WHERE id = ?").bind(hidden).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO extractions (email_id, company, role, event_type) VALUES (?, 'Lyft', 'Data Engineer Intern', 'applied')")
+                .bind(a).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO applications (company, title) VALUES ('Lyft', 'Data Engineer Intern')").execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO email_matches (email_id, application_id, score, reasons, action) VALUES (?, 1, 0.9, '[]', 'attach')")
+                .bind(a).execute(&pool).await.unwrap();
+        });
+        let ids = |q: &str| list(&pool, Some(q)).unwrap().into_iter().map(|r| r.id).collect::<Vec<_>>();
+        assert_eq!(ids("lyft"), [a]); // company (case-insensitive)
+        assert_eq!(ids("data engineer"), [a]); // role
+        assert_eq!(ids("subject b"), [b]); // subject
+        assert_eq!(ids("acme.com"), [b, a]); // sender
+        assert_eq!(ids("ROBINHOOD"), [b]); // body, and never ignored mail
+        assert!(ids("100%").is_empty()); // % is literal, and that one is ignored
+        assert!(ids("zzz").is_empty());
+        assert_eq!(list(&pool, Some("   ")).unwrap().len(), 2); // blank = no search
+
+        assert_eq!(jobs(&pool, Some("lyft")).unwrap().len(), 1);
+        assert!(jobs(&pool, Some("robinhood")).unwrap().is_empty());
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }

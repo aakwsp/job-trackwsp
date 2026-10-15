@@ -7,6 +7,11 @@
    ─────────────────────────────────────────────────────── */
 :root,
 [data-theme="dark"] {
+  /* Tells WebKit the page is dark, so native controls it still draws
+     (select popups, date pickers, scrollbars) use their dark variants
+     instead of the light GTK theme behind our pale text. */
+  color-scheme: dark;
+
   /* from the portfolio */
   --bg:         #141216;
   --bg-card:    #27232b;
@@ -67,7 +72,7 @@
   --text-body:         0.9375rem;  /* 15px  body default */
   --text-company-line: 1.0625rem;  /* 17px  company in list view */
   --text-company:      1.3125rem;  /* 21px  company on a card */
-  --text-brand:        1.25rem;    /* 20px  "job tracker" in the header */
+  --text-brand:        1.25rem;    /* 20px  "job trackwsp" in the header */
   --text-heading:      1.75rem;    /* 28px  page title */
   --text-hero:         3.5rem;     /* 56px  hero title per view */
   --text-record:       3.25rem;    /* 52px  company in the detail drawer */

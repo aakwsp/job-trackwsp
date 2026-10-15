@@ -24,6 +24,9 @@ type JobSort = 'activity' | 'company'
 export default function Inbox({ inbox, top, connected }: Props) {
   // `g` toggles by email / by job.
   const [mode, setMode] = useState<Mode>('email')
+  // The search line: `/` opens (or re-focuses) it, esc clears and closes.
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchRef = useRef<HTMLInputElement>(null)
   const [jobSort, setJobSort] = useState<JobSort>('activity')
   const [jobId, setJobId] = useState<number | null>(null)
   const [sort, setSort] = useState<MailSort>('newest')
@@ -60,16 +63,23 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // applications (by job).
   const order = useMemo(() => [...checking, ...all].map((r) => r.id), [checking, all])
   const jobOrder = useMemo(() => (inbox.jobs ?? []).map((j) => j.application_id), [inbox.jobs])
-  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob })
+  const keyState = useRef({ current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob, searchOpen })
   useEffect(() => {
-    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob }
+    keyState.current = { current, timeline: inbox.detail?.timeline ?? [], openId, order, jobOrder, mode, jobId, openJob, searchOpen }
   })
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob } = keyState.current
-      if (e.key === 'j' || e.key === 'k') {
+      const { current: r, timeline, openId: id, order: ids, jobOrder: jobs, mode: md, jobId: job, openJob: goJob, searchOpen: searching } = keyState.current
+      if (e.key === 'Escape' && searching) {
+        inbox.setQuery('')
+        setSearchOpen(false)
+      } else if (e.key === '/') {
+        setSearchOpen(true)
+        // Focus after React has rendered the line (it may be opening now).
+        requestAnimationFrame(() => searchRef.current?.focus())
+      } else if (e.key === 'j' || e.key === 'k') {
         const step = e.key === 'j' ? 1 : -1
         if (md === 'job') {
           const next = jobs[jobs.indexOf(job ?? -1) + step] ?? (job === null ? jobs[0] : undefined)
@@ -102,19 +112,33 @@ export default function Inbox({ inbox, top, connected }: Props) {
     <div className="grid grid-cols-1 border-t border-rule-strong border-b border-b-rule min-[900px]:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
       <section aria-label="mail" className="min-w-0 border-b border-rule min-[900px]:border-r min-[900px]:border-b-0">
         <Toolbar mode={mode} onMode={setMode} sort={sort} onSort={setSort} jobSort={jobSort} onJobSort={setJobSort} />
+        {searchOpen && (
+          <SearchLine
+            inputRef={searchRef}
+            value={inbox.query}
+            onChange={inbox.setQuery}
+            count={mode === 'job' ? (inbox.jobs?.length ?? 0) : rows.length}
+            unit={mode === 'job' ? 'jobs' : 'emails'}
+            onClose={() => {
+              inbox.setQuery('')
+              setSearchOpen(false)
+            }}
+          />
+        )}
         {top}
         {mode === 'job' ? (
-          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} />
+          <JobList jobs={inbox.jobs ?? []} sort={jobSort} currentId={jobId} onOpen={openJob} query={inbox.searched} />
         ) : (
           <>
         {checking.length > 0 ? (
           <>
             <Band count={checking.length}>// checking</Band>
-            <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} />
+            <RowList rows={checking} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
           </>
         ) : (
           connected &&
-          inbox.rows && (
+          inbox.rows &&
+          !inbox.searched && (
             // The InboxEmpty board: the section stays, saying so.
             <>
               <Band count={0}>// checking</Band>
@@ -128,13 +152,17 @@ export default function Inbox({ inbox, top, connected }: Props) {
         <Band count={all.length} top={checking.length > 0 || connected || !!top}>
           // all mail
         </Band>
-        <RowList rows={all} openId={openId} onOpen={(id) => open(id)} />
-        <IgnoredLine
+        <RowList rows={all} openId={openId} onOpen={(id) => open(id)} query={inbox.searched} />
+        {inbox.searched && rows.length === 0 && (
+          <p className="py-6 pr-5 pl-6 text-meta text-text-dim">nothing matches “{inbox.searched}”.</p>
+        )}
+        {/* Ignored mail is never searched, so its line steps aside. */}
+        {!inbox.searched && <IgnoredLine
           ignored={inbox.ignored ?? []}
           open={showIgnored}
           onToggle={() => setShowIgnored((x) => !x)}
           onRestore={(r) => inbox.act(() => api.mailRestore(r.gmail_id))}
-        />
+        />}
           </>
         )}
       </section>
@@ -200,22 +228,31 @@ function JobList({
   sort,
   currentId,
   onOpen,
+  query,
 }: {
   jobs: InboxJob[]
   sort: JobSort
   currentId: number | null
   onOpen: (applicationId: number) => void
+  query: string
 }) {
   const companies = new Map<string, InboxJob[]>()
   for (const j of jobs) companies.set(j.company.toLowerCase(), [...(companies.get(j.company.toLowerCase()) ?? []), j])
   const latest = (js: InboxJob[]) => js.map((j) => j.latest ?? '').sort().slice(-1)[0] ?? ''
   const groups = [...companies].sort(([a, x], [b, y]) => (sort === 'company' ? a.localeCompare(b) : latest(y).localeCompare(latest(x))))
-  if (groups.length === 0) return <p className="px-6 py-6 text-meta text-text-dim">no emails matched to an application yet.</p>
+  if (groups.length === 0)
+    return (
+      <p className="px-6 py-6 text-meta text-text-dim">
+        {query ? `nothing matches “${query}”.` : 'no emails matched to an application yet.'}
+      </p>
+    )
   return (
     <>
       {groups.map(([co, js]) => (
         <div key={co} className="border-b border-rule">
-          <div className="pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05]">{co}</div>
+          <div className="pt-3.5 pr-5 pb-1 pl-6 font-serif text-[1.25rem] leading-[1.05]">
+            <Hl text={co} query={query} />
+          </div>
           <ul className="m-0 list-none p-0 pb-2">
             {js.map((j) => {
               const color = eventColor(j.status === 'rejected' ? 'rejection' : j.status)
@@ -226,12 +263,14 @@ function JobList({
                     type="button"
                     onClick={() => onOpen(j.application_id)}
                     aria-current={current || undefined}
-                    className={`block w-full cursor-pointer py-2 pr-5 pl-6 text-left hover:bg-bg-active ${
-                      current ? 'bg-bg-active outline outline-text -outline-offset-1' : ''
+                    className={`block w-full cursor-pointer appearance-none py-2 pr-5 pl-6 text-left text-text ${
+                      current ? 'bg-bg-active outline outline-text -outline-offset-1' : 'bg-transparent hover:bg-bg-active'
                     }`}
                   >
                     <span className="flex items-baseline gap-3">
-                      <span className="min-w-0 flex-1 truncate text-meta">{j.title}</span>
+                      <span className="min-w-0 flex-1 truncate text-meta">
+                        <Hl text={j.title} query={query} />
+                      </span>
                       <span data-color={color ?? undefined} className={`text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
                         {j.status}
                       </span>
@@ -259,7 +298,7 @@ export function Seg({ on, dim, onClick, children }: { on: boolean; dim?: boolean
       type="button"
       onClick={onClick}
       aria-pressed={on}
-      className={`h-7 cursor-pointer border-b px-1.5 text-[0.65625rem] hover:text-text ${
+      className={`h-7 cursor-pointer appearance-none border-b bg-transparent px-1.5 text-[0.65625rem] hover:text-text ${
         on ? `text-text ${dim ? 'border-text' : 'border-transparent'}` : `border-transparent ${dim ? 'text-text-dim' : 'text-text-muted'}`
       }`}
     >
@@ -282,12 +321,93 @@ export function Band({ children, count, top = false }: { children: ReactNode; co
   )
 }
 
-function RowList({ rows, openId, onOpen }: { rows: InboxRow[]; openId: number | null; onOpen: (id: number) => void }) {
+// The search line (JT-18): same spacing as a section band, `// search` in
+// band type, and an input that's only a hairline underline: no box, no
+// radius, Space Mono like everything else.
+function SearchLine({
+  inputRef,
+  value,
+  onChange,
+  count,
+  unit,
+  onClose,
+}: {
+  inputRef: React.RefObject<HTMLInputElement | null>
+  value: string
+  onChange: (v: string) => void
+  count: number
+  unit: string
+  onClose: () => void
+}) {
+  return (
+    <div className="flex h-9 items-center gap-3 border-b border-rule bg-bg pr-5 pl-6">
+      <label htmlFor="inbox-search" className="shrink-0 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase">
+        // search
+      </label>
+      <input
+        id="inbox-search"
+        ref={inputRef}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault()
+            // Handled here: nothing else reacts to this esc.
+            e.stopPropagation()
+            onClose()
+          }
+        }}
+        placeholder="company, role, subject, sender, body"
+        autoComplete="off"
+        spellCheck={false}
+        className="h-6 min-w-0 flex-1 appearance-none border-0 border-b border-rule-strong bg-transparent px-0 text-meta text-text outline-none placeholder:text-text-dim focus:border-text"
+      />
+      <span className="shrink-0 text-micro text-text-dim">
+        {value.trim() ? `${count} ${unit}` : 'esc to close'}
+      </span>
+    </div>
+  )
+}
+
+/** The text with every case-insensitive match of `query` marked. */
+export function Hl({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>
+  const parts: ReactNode[] = []
+  const lower = text.toLowerCase()
+  const q = query.toLowerCase()
+  let i = 0
+  for (let at = lower.indexOf(q); at !== -1; at = lower.indexOf(q, i)) {
+    parts.push(text.slice(i, at))
+    // A dark mark: the rule-strong surface + underline, readable on the
+    // row and on the selected row alike.
+    parts.push(
+      <mark key={at} className="bg-rule-strong text-text underline decoration-text-muted underline-offset-2">
+        {text.slice(at, at + q.length)}
+      </mark>,
+    )
+    i = at + q.length
+  }
+  parts.push(text.slice(i))
+  return <>{parts}</>
+}
+
+function RowList({
+  rows,
+  openId,
+  onOpen,
+  query,
+}: {
+  rows: InboxRow[]
+  openId: number | null
+  onOpen: (id: number) => void
+  query: string
+}) {
   return (
     <ul className="m-0 list-none p-0">
       {rows.map((r) => (
         <li key={r.id} className="border-b border-rule">
-          <Row row={r} current={r.id === openId} onOpen={onOpen} />
+          <Row row={r} current={r.id === openId} onOpen={onOpen} query={query} />
         </li>
       ))}
     </ul>
@@ -296,7 +416,11 @@ function RowList({ rows, openId, onOpen }: { rows: InboxRow[]; openId: number | 
 
 // One email: unread dot, company, event type in its stage colour, the
 // routing score (pink when low), "auto"; then subject and date.
-function Row({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen: (id: number) => void }) {
+// Every state is explicit: resting = transparent, hovered or selected =
+// the dark --bg-active surface (selected adds the parchment hairline), and
+// `appearance: none` so WebKitGTK never draws a native (light) button
+// under the text.
+function Row({ row, current, onOpen, query }: { row: InboxRow; current: boolean; onOpen: (id: number) => void; query: string }) {
   const color = eventColor(row.event_type)
   const unread = !row.read
   return (
@@ -305,8 +429,8 @@ function Row({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen
       onClick={() => onOpen(row.id)}
       aria-current={current || undefined}
       data-inbox-row={row.id}
-      className={`block w-full cursor-pointer pt-[0.8125rem] pr-5 pb-3 pl-6 text-left hover:bg-bg-active ${
-        current ? 'bg-bg-active outline outline-text -outline-offset-1' : ''
+      className={`block w-full cursor-pointer appearance-none pt-[0.8125rem] pr-5 pb-3 pl-6 text-left text-text ${
+        current ? 'bg-bg-active outline outline-text -outline-offset-1' : 'bg-transparent hover:bg-bg-active'
       }`}
     >
       <span className="flex items-center gap-2.5">
@@ -316,7 +440,7 @@ function Row({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen
           className={`size-[0.3125rem] shrink-0 ${unread ? 'bg-text' : 'bg-transparent'}`}
         />
         <span className={`font-serif text-[1.1875rem] leading-[1.05] lowercase ${unread ? 'text-text' : 'text-text-muted'}`}>
-          {row.company ?? '—'}
+          <Hl text={row.company ?? '—'} query={query} />
         </span>
         <span data-color={color ?? undefined} className={`text-[0.6875rem] ${color ? 'text-(--c)' : 'text-text-muted'}`}>
           {eventLabel(row.event_type)}
@@ -329,7 +453,9 @@ function Row({ row, current, onOpen }: { row: InboxRow; current: boolean; onOpen
         {row.status === 'auto' && <span className={`text-micro text-text-dim ${row.score === null ? 'ml-auto' : ''}`}>auto</span>}
       </span>
       <span className="mt-[0.4375rem] flex gap-3 pl-[0.9375rem] text-[0.6875rem]">
-        <span className={`min-w-0 flex-1 truncate ${unread ? 'text-text' : 'text-text-muted'}`}>{row.subject ?? ''}</span>
+        <span className={`min-w-0 flex-1 truncate ${unread ? 'text-text' : 'text-text-muted'}`}>
+          <Hl text={row.subject ?? ''} query={query} />
+        </span>
         <span className="shrink-0 text-text-dim">{localDay(row.received_at)}</span>
       </span>
     </button>
