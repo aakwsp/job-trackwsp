@@ -31,6 +31,11 @@ src-tauri/             Rust core
   `oauth2` for the Gmail loopback flow.
 - The frontend calls Rust through Tauri commands (`invoke`). There is no HTTP
   server and no REST API.
+- A command declared as a plain `fn` runs on the **main thread** and freezes
+  the window until it returns. Anything that can be slow (network, waiting on
+  the browser) must be an `async fn` that runs its blocking work through
+  `off_main_thread` (`spawn_blocking`) in `lib.rs`. Quick SQLx-only commands
+  are `async fn` already.
 
 ## Identity and deduplication (important)
 

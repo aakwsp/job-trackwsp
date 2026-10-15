@@ -510,6 +510,7 @@ export default function App() {
     busy: gmail.busy,
     error: gmail.error,
     onConnect: gmail.connect,
+    onCancel: gmail.cancel,
     onDisconnect: gmail.disconnect,
   }
 

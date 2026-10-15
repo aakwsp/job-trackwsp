@@ -9,6 +9,7 @@ type Props = {
   busy: boolean
   error: string | null
   onConnect: () => void
+  onCancel: () => void
   onDisconnect: () => void
 }
 
@@ -42,7 +43,7 @@ export function GmailStatusLine({ status, busy, onDisconnect }: Props) {
 // The block under the hero, shown only while disconnected. Errors (no
 // client file, no keyring, timed out, ...) show under the button; while
 // connected they go under the status line instead (see App).
-export function GmailConnectBlock({ status, busy, error, onConnect }: Props) {
+export function GmailConnectBlock({ status, busy, error, onConnect, onCancel }: Props) {
   if (status.kind !== 'disconnected') return null
   return (
     <div className="border-b border-rule pt-6 pr-5 pb-[1.625rem] pl-6">
@@ -50,7 +51,7 @@ export function GmailConnectBlock({ status, busy, error, onConnect }: Props) {
       <p className="mt-2 text-[0.65625rem] leading-[1.7] text-text-dim">
         parsed mail below is kept. connect your job account to keep it current.
       </p>
-      <div className="mt-4">
+      <div className="mt-4 flex flex-wrap items-center gap-4">
         <button
           type="button"
           onClick={onConnect}
@@ -59,6 +60,13 @@ export function GmailConnectBlock({ status, busy, error, onConnect }: Props) {
         >
           {busy ? '[ finish signing in, in your browser… ]' : '[ connect job account ]'}
         </button>
+        {/* Closed the tab, or changed your mind: stop waiting now rather
+            than at the 5-minute timeout. */}
+        {busy && (
+          <button type="button" onClick={onCancel} className="cursor-pointer text-meta text-text-muted hover:text-text">
+            [ cancel ]
+          </button>
+        )}
       </div>
       {error && <p className="mt-3 max-w-xl text-[0.65625rem] leading-[1.7] text-pink">{error}</p>}
     </div>

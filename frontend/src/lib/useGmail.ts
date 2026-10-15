@@ -38,10 +38,17 @@ export function useGmail(active: boolean) {
       const address = await api.gmailConnect()
       setStatus({ kind: 'connected', address })
     } catch (e) {
-      setError(String(e))
+      // Cancelling is a choice, not a failure: no error line for it.
+      if (String(e) !== 'cancelled') setError(String(e))
     } finally {
       setBusy(false)
     }
+  }
+
+  // [ cancel ] while signing in. The pending `connect` above then rejects
+  // with "cancelled" and clears `busy` itself.
+  function cancel() {
+    api.gmailCancel().catch((e) => setError(String(e)))
   }
 
   async function disconnect() {
@@ -57,5 +64,5 @@ export function useGmail(active: boolean) {
     }
   }
 
-  return { status, busy, error, connect, disconnect }
+  return { status, busy, error, connect, cancel, disconnect }
 }

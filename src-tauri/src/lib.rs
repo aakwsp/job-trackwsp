@@ -45,16 +45,46 @@ fn load_dotenv() {
     }
 }
 
-/// Manual "sync now" from the UI. Deliberately not `async fn`: everything
-/// this calls is blocking (see `sync`'s module doc), and a non-async Tauri
-/// command is dispatched by Tauri on a thread where that's fine, without us
-/// needing to add tokio just to `.await` it.
+/// Runs blocking work (network, the OAuth listener) on Tauri's blocking
+/// thread pool and awaits it.
+///
+/// Why: a Tauri command that is a plain `fn` runs inline in the IPC
+/// handler, on the main thread that also drives the window, so anything
+/// slow in it freezes the whole UI until it returns (the macro's
+/// `body_blocking`). `async fn` commands run on the async runtime instead,
+/// and `spawn_blocking` moves the blocking part onto threads meant for it.
+/// The closure gets the `AppHandle` to look up managed state, because
+/// `State<'_, T>` borrows can't move onto another thread.
+async fn off_main_thread<T, E>(
+    app: tauri::AppHandle,
+    work: impl FnOnce(&tauri::AppHandle) -> Result<T, E> + Send + 'static,
+    join_error: impl FnOnce(String) -> E,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || work(&app))
+        .await
+        .unwrap_or_else(|e| Err(join_error(e.to_string())))
+}
+
+/// Manual "sync now" from the UI. The sync itself is blocking (see `sync`'s
+/// module doc; up to ~30s with Apps Script retries), so it runs off the main
+/// thread.
 #[tauri::command]
-fn sync_now(pool: tauri::State<'_, SqlitePool>) -> Result<sync::SyncCounts, sync::SyncError> {
-    let url = std::env::var("URL").map_err(|_| sync::SyncError::Config("URL not set".into()))?;
-    let token =
-        std::env::var("TOKEN").map_err(|_| sync::SyncError::Config("TOKEN not set".into()))?;
-    sync::run_sync_blocking(&pool, &url, &token)
+async fn sync_now(app: tauri::AppHandle) -> Result<sync::SyncCounts, sync::SyncError> {
+    off_main_thread(
+        app,
+        |app| {
+            let url = std::env::var("URL").map_err(|_| sync::SyncError::Config("URL not set".into()))?;
+            let token =
+                std::env::var("TOKEN").map_err(|_| sync::SyncError::Config("TOKEN not set".into()))?;
+            sync::run_sync_blocking(&app.state::<SqlitePool>(), &url, &token)
+        },
+        |e| sync::SyncError::Config(format!("sync task failed: {e}")),
+    )
+    .await
 }
 
 /// Every non-hidden job for the list view, with its `applied` flag. These
@@ -153,40 +183,70 @@ fn gmail_credentials(app: &tauri::AppHandle) -> Result<gmail::credentials::Clien
     gmail::credentials::load(&gmail::credentials::path_in(&dir))
 }
 
+fn gmail_join_error(e: String) -> gmail::GmailError {
+    gmail::GmailError::Io(format!("gmail task failed: {e}"))
+}
+
 /// [ connect job account ]: runs the browser sign-in and returns the
-/// connected address. Blocking (up to the 5-minute timeout), so not
-/// `async`: Tauri runs it off the UI thread.
+/// connected address. Waits up to 5 minutes for the browser, off the main
+/// thread (see `off_main_thread`) so the window stays usable meanwhile.
 #[tauri::command]
-fn gmail_connect(
-    app: tauri::AppHandle,
-    pool: tauri::State<'_, SqlitePool>,
-    state: tauri::State<'_, gmail::GmailState>,
-) -> Result<String, gmail::GmailError> {
-    let creds = gmail_credentials(&app)?;
-    gmail::connect(&state, &pool, &creds, |url| {
-        app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
-    })
+async fn gmail_connect(app: tauri::AppHandle) -> Result<String, gmail::GmailError> {
+    off_main_thread(
+        app,
+        |app| {
+            let creds = gmail_credentials(app)?;
+            gmail::connect(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, |url| {
+                app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+            })
+        },
+        gmail_join_error,
+    )
+    .await
+}
+
+/// [ cancel ] while the browser sign-in is open: the waiting
+/// `gmail_connect` stops within ~100ms and closes its listener. Just sets a
+/// flag, so it's fine as a plain (main-thread) command.
+#[tauri::command]
+fn gmail_cancel(state: tauri::State<'_, gmail::GmailState>) {
+    state.cancel_connect();
 }
 
 /// The connected address, or null. A missing client file doesn't make this
-/// fail: without it there's simply no way to check with Google.
+/// fail: without it there's simply no way to check with Google. May call
+/// Google (token refresh), hence off the main thread.
 #[tauri::command]
-fn gmail_status(
-    app: tauri::AppHandle,
-    pool: tauri::State<'_, SqlitePool>,
-    state: tauri::State<'_, gmail::GmailState>,
-) -> Result<Option<String>, gmail::GmailError> {
-    gmail::status(&state, &pool, gmail_credentials(&app).ok().as_ref())
+async fn gmail_status(app: tauri::AppHandle) -> Result<Option<String>, gmail::GmailError> {
+    off_main_thread(
+        app,
+        |app| {
+            gmail::status(
+                &app.state::<gmail::GmailState>(),
+                &app.state::<SqlitePool>(),
+                gmail_credentials(app).ok().as_ref(),
+            )
+        },
+        gmail_join_error,
+    )
+    .await
 }
 
 /// [ disconnect ]: revoke at Google, then delete the keyring entry.
 #[tauri::command]
-fn gmail_disconnect(
-    app: tauri::AppHandle,
-    pool: tauri::State<'_, SqlitePool>,
-    state: tauri::State<'_, gmail::GmailState>,
-) -> Result<(), gmail::GmailError> {
-    gmail::disconnect(&state, &pool, gmail_credentials(&app).ok().as_ref())
+async fn gmail_disconnect(app: tauri::AppHandle) -> Result<(), gmail::GmailError> {
+    off_main_thread(
+        app,
+        |app| {
+            gmail::disconnect(
+                &app.state::<gmail::GmailState>(),
+                &app.state::<SqlitePool>(),
+                gmail_credentials(app).ok().as_ref(),
+            )
+        },
+        gmail_join_error,
+    )
+    .await
 }
 
 /// Opens a posting in the system browser. Done from Rust rather than
@@ -246,6 +306,7 @@ pub fn run() {
             add_application,
             save_application_notes,
             gmail_connect,
+            gmail_cancel,
             gmail_status,
             gmail_disconnect
         ])
@@ -275,4 +336,20 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    /// The pattern `off_main_thread` relies on: blocking code on the
+    /// blocking pool calling `block_on` for its SQLx work (as `sync` and
+    /// `gmail` do) must not panic with "runtime within a runtime".
+    #[test]
+    fn block_on_inside_spawn_blocking() {
+        let n = tauri::async_runtime::block_on(async {
+            tauri::async_runtime::spawn_blocking(|| tauri::async_runtime::block_on(async { 41 + 1 }))
+                .await
+                .unwrap()
+        });
+        assert_eq!(n, 42);
+    }
 }

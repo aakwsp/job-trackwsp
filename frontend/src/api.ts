@@ -37,6 +37,10 @@ export const saveApplicationNotes = (id: number, body: string) =>
 // (or rejects: timed out, denied, no keyring, ...), with the address.
 export const gmailConnect = () => invoke<string>('gmail_connect')
 
+// Stops a connect that's waiting for the browser; its promise then rejects
+// with "cancelled".
+export const gmailCancel = () => invoke<void>('gmail_cancel')
+
 export const gmailStatus = () => invoke<string | null>('gmail_status')
 
 export const gmailDisconnect = () => invoke<void>('gmail_disconnect')

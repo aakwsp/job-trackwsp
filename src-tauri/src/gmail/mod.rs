@@ -66,6 +66,8 @@ pub enum GmailError {
     /// Testing). Either way: show connect again.
     NotConnected,
     AlreadyConnecting,
+    /// The user pressed [ cancel ] while the browser sign-in was open.
+    Cancelled,
     Timeout,
     Denied(String),
     StateMismatch,
@@ -87,6 +89,7 @@ impl std::fmt::Display for GmailError {
             GmailError::Keyring(m) => write!(f, "keyring: {m}"),
             GmailError::NotConnected => write!(f, "gmail not connected"),
             GmailError::AlreadyConnecting => write!(f, "already connecting — finish in the browser tab"),
+            GmailError::Cancelled => write!(f, "cancelled"),
             GmailError::Timeout => write!(f, "no answer from the browser within 5 minutes — try connecting again"),
             GmailError::Denied(why) => write!(f, "google did not grant access ({why})"),
             GmailError::StateMismatch => write!(f, "the redirect didn't match this sign-in attempt — try again"),
@@ -118,6 +121,8 @@ impl From<sqlx::Error> for GmailError {
 pub struct GmailState {
     access: Mutex<Option<Cached>>,
     connecting: AtomicBool,
+    /// Set by `gmail_cancel`; the redirect wait checks it every 100ms.
+    cancel: AtomicBool,
     store: Box<dyn TokenStore>,
 }
 
@@ -132,7 +137,16 @@ impl GmailState {
         GmailState {
             access: Mutex::new(None),
             connecting: AtomicBool::new(false),
+            cancel: AtomicBool::new(false),
             store,
+        }
+    }
+
+    /// Stops a sign-in that's waiting for the browser. Nothing to stop if
+    /// none is running.
+    pub fn cancel_connect(&self) {
+        if self.connecting.load(Ordering::SeqCst) {
+            self.cancel.store(true, Ordering::SeqCst);
         }
     }
 }
@@ -173,6 +187,7 @@ pub fn connect(
     if state.connecting.swap(true, Ordering::SeqCst) {
         return Err(GmailError::AlreadyConnecting);
     }
+    state.cancel.store(false, Ordering::SeqCst);
     let result = connect_inner(state, pool, creds, open_browser);
     state.connecting.store(false, Ordering::SeqCst);
     result
@@ -205,7 +220,7 @@ fn connect_inner(
     open_browser(url.as_str()).map_err(|e| GmailError::Io(format!("couldn't open the browser: {e}")))?;
     // `listener` is moved in and dropped when this returns, closing the
     // port whether it succeeded, failed or timed out.
-    let code = wait_for_redirect(listener, &csrf, CONNECT_TIMEOUT)?;
+    let code = wait_for_redirect(listener, &csrf, CONNECT_TIMEOUT, &state.cancel)?;
 
     let http = http()?;
     let tokens = client
@@ -232,15 +247,23 @@ fn good_until(expires_in: Option<Duration>) -> Instant {
 }
 
 /// Accepts connections until the OAuth redirect arrives, the user denies,
-/// or `timeout` passes. Anything that isn't the redirect (a favicon
-/// request, say) gets a 404 and the wait goes on.
-fn wait_for_redirect(listener: TcpListener, csrf: &CsrfToken, timeout: Duration) -> Result<AuthorizationCode, GmailError> {
+/// `cancel` is set, or `timeout` passes. Anything that isn't the redirect
+/// (a favicon request, say) gets a 404 and the wait goes on.
+fn wait_for_redirect(
+    listener: TcpListener,
+    csrf: &CsrfToken,
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<AuthorizationCode, GmailError> {
     listener.set_nonblocking(true).map_err(|e| GmailError::Io(e.to_string()))?;
     let deadline = Instant::now() + timeout;
     loop {
         let mut stream = match listener.accept() {
             Ok((stream, _)) => stream,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if cancel.load(Ordering::SeqCst) {
+                    return Err(GmailError::Cancelled);
+                }
                 if Instant::now() >= deadline {
                     return Err(GmailError::Timeout);
                 }
@@ -567,7 +590,7 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         let csrf = CsrfToken::new("s".into());
         assert!(matches!(
-            wait_for_redirect(listener, &csrf, Duration::from_millis(200)),
+            wait_for_redirect(listener, &csrf, Duration::from_millis(200), &AtomicBool::new(false)),
             Err(GmailError::Timeout)
         ));
         // The listener was dropped with the call: the port no longer accepts.
@@ -590,7 +613,9 @@ mod tests {
             assert!(get("/favicon.ico").starts_with("HTTP/1.1 404"));
             get("/?state=right&code=the-code")
         });
-        let code = wait_for_redirect(listener, &CsrfToken::new("right".into()), Duration::from_secs(5)).unwrap();
+        let code =
+            wait_for_redirect(listener, &CsrfToken::new("right".into()), Duration::from_secs(5), &AtomicBool::new(false))
+                .unwrap();
         assert_eq!(code.secret(), "the-code");
         assert!(client.join().unwrap().contains("connected, you can close this tab."));
 
@@ -601,8 +626,29 @@ mod tests {
             write!(s, "GET /?state=forged&code=x HTTP/1.1\r\n\r\n").unwrap();
         });
         assert!(matches!(
-            wait_for_redirect(listener, &CsrfToken::new("right".into()), Duration::from_secs(5)),
+            wait_for_redirect(listener, &CsrfToken::new("right".into()), Duration::from_secs(5), &AtomicBool::new(false)),
             Err(GmailError::StateMismatch)
         ));
+    }
+
+    /// [ cancel ]: the wait stops promptly (not at the 5-minute timeout)
+    /// and the port is closed.
+    #[test]
+    fn redirect_listener_stops_on_cancel() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        assert!(matches!(
+            wait_for_redirect(listener, &CsrfToken::new("s".into()), CONNECT_TIMEOUT, &cancel),
+            Err(GmailError::Cancelled)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(std::net::TcpStream::connect(addr).is_err());
     }
 }
