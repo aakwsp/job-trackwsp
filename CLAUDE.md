@@ -74,8 +74,10 @@ insert a new row.
   filtered at once: `status` is `pending` (on to the LLM, JT-15), `ignored`,
   or `blocked`, and `filter_reason` says why either way. Order: the block
   list (the user's part-time job, `ams.queensu.ca` and Dayforce's `notify@`;
-  nothing overrides it), then the allow list, which wins over the ignore
-  list. All three are constants in `mail/filter.rs` for now (editable in
+  nothing overrides it), then the allow list's ATS senders, then ignored
+  single addresses (they beat the next rule), then the allow list's
+  applied-company domains (a guess from company names and posting URLs),
+  then the rest of the ignore list. All three lists are constants in `mail/filter.rs` for now (editable in
   JT-33). **Ignored and blocked mail keeps only `gmail_id`, `from_addr`,
   `subject`, `received_at` and `filter_reason`**: body, snippet, recipient,
   thread and labels are never stored (or are cleared by `mail::refilter`,

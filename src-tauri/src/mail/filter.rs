@@ -5,8 +5,11 @@
 //! Order:
 //! 1. The block list. Mail that must never reach the LLM, whatever else
 //!    is true of it (the user's current part-time job). Nothing overrides it.
-//! 2. The allow list (ATS senders, applied companies). Wins over 3.
-//! 3. The ignore list.
+//! 2. The allow list's ATS senders. Win over everything below.
+//! 3. Ignored single addresses (`IGNORE_ADDRESSES`). These name one
+//!    sender exactly, so they beat the next rule, which only guesses.
+//! 4. The allow list's applied-company domains. Wins over 5.
+//! 5. The rest of the ignore list (sent mail, domains, List-Unsubscribe).
 //!
 //! Anything else goes to the LLM, which can still call it "not job
 //! related" (JT-15).
@@ -44,12 +47,16 @@ pub const ALLOW_DOMAINS: &[&str] = &[
 /// per-tenant hosts like `myworkday.com`, `acme.myworkdayjobs.com`, ...
 pub const ALLOW_DOMAIN_CONTAINS: &[&str] = &["myworkday"];
 
-/// Account and security mail (Google, Microsoft).
+/// Account and security mail (Google, Microsoft). Checked before the
+/// applied-company rule: with a Google application, `google.com` is an
+/// "applied company" domain, and these would otherwise slip through it.
 pub const IGNORE_ADDRESSES: &[&str] = &[
     "no-reply@accounts.google.com",
     "noreply@accounts.google.com",
     "mail-noreply@google.com",
     "forwarding-noreply@google.com",
+    "noreply-accounts@google.com",
+    "workspace-noreply@google.com",
     "account-security-noreply@accountprotection.microsoft.com",
 ];
 
@@ -62,6 +69,9 @@ pub const IGNORE_DOMAINS: &[&str] = &[
     "mcsv.net",
     "mailchimpapp.net",
     "citationcanada.com",
+    // Workday one-time sign-in codes. Not caught by the "myworkday" allow
+    // rule, which only matches application mail hosts.
+    "otp.workday.com",
 ];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -123,15 +133,16 @@ pub fn classify(input: &Input, company_domains: &[String]) -> Verdict {
     if let Some(d) = ALLOW_DOMAIN_CONTAINS.iter().find(|d| domain.contains(*d)) {
         return Verdict::Pending(format!("ats: {d}"));
     }
+    // Exact senders before the applied-company guess (see IGNORE_ADDRESSES).
+    if IGNORE_ADDRESSES.contains(&address.as_str()) {
+        return Verdict::Ignored(format!("account mail: {address}"));
+    }
     if company_domains.contains(&domain) {
         return Verdict::Pending(format!("applied company: {domain}"));
     }
 
     if input.label_ids.iter().any(|l| l == "SENT") {
         return Verdict::Ignored("sent by you".into());
-    }
-    if IGNORE_ADDRESSES.contains(&address.as_str()) {
-        return Verdict::Ignored(format!("account mail: {address}"));
     }
     if let Some(d) = IGNORE_DOMAINS.iter().find(|d| is_domain_or_sub(&domain, d)) {
         return Verdict::Ignored(format!("ignored domain: {d}"));
@@ -302,6 +313,33 @@ mod tests {
             run("info@citationcanada.com", false, &[], &[]),
             Verdict::Ignored("ignored domain: citationcanada.com".into())
         );
+    }
+
+    #[test]
+    fn google_and_workday_account_mail() {
+        let google = &["google.com"];
+        // With a Google application: the named account senders are still
+        // ignored, but a recruiter at google.com is let through.
+        for addr in [
+            "noreply-accounts@google.com",
+            "workspace-noreply@google.com",
+            "mail-noreply@google.com",
+        ] {
+            assert_eq!(
+                run(&format!("Google <{addr}>"), false, &["INBOX"], google),
+                Verdict::Ignored(format!("account mail: {addr}"))
+            );
+        }
+        assert_eq!(
+            run("Recruiter <recruiter@google.com>", false, &["INBOX"], google),
+            Verdict::Pending("applied company: google.com".into())
+        );
+        // Workday sign-in codes ignored; Workday application mail allowed.
+        assert_eq!(
+            run("Workday <noreply@otp.workday.com>", false, &[], &[]),
+            Verdict::Ignored("ignored domain: otp.workday.com".into())
+        );
+        assert!(pending(run("acme@myworkday.com", false, &[], &[])));
     }
 
     #[test]
