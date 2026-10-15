@@ -1,4 +1,4 @@
-import type { FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
+import type { FilterMode, FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
 
 export const CLOSING_SOON_DAYS = 7
 export const STALE_DAYS = 30
@@ -8,8 +8,8 @@ export const STALE_DAYS = 30
 export const DEFAULT_FILTERS: Filters = {
   query: '',
   city: '',
-  statuses: [],
-  flags: [],
+  statuses: {},
+  flags: {},
 }
 
 // 'YYYY-MM-DD' → whole days since the epoch. Going through Date.UTC (not
@@ -188,19 +188,28 @@ export function flagSlots(job: Job): { flag: Flag; on: boolean }[] {
 }
 
 /**
- * `ignore` skips one group. The filter panel uses it for its counts: a
- * status row's count is "what you'd see with this status checked", so it
- * applies search, city and the flag group, but not the status group itself.
+ * `ignore` skips one group (its includes and excludes both). The filter
+ * panel uses it for its counts: a status row's count is "what you'd see
+ * with this status included", so it applies search, city and the flag
+ * group, but not the status group itself.
  */
 export function matchesFilters(job: Job, f: Filters, ignore?: 'statuses' | 'flags'): boolean {
   const q = f.query.trim().toLowerCase()
   if (q && !`${job.company} ${job.title}`.toLowerCase().includes(q)) return false
   const c = f.city.trim().toLowerCase()
   if (c && !(job.city ?? '').toLowerCase().includes(c)) return false
-  if (ignore !== 'statuses' && f.statuses.length > 0 && !f.statuses.includes(statusOf(job))) return false
-  if (ignore !== 'flags' && f.flags.length > 0 && !FLAGS.some((fl) => f.flags.includes(fl.key) && fl.test(job)))
-    return false
+  if (ignore !== 'statuses' && !groupPasses(f.statuses, [statusOf(job)])) return false
+  if (ignore !== 'flags' && !groupPasses(f.flags, activeFlags(job).map((fl) => fl.key))) return false
   return true
+}
+
+// One group's verdict, given the row keys this posting matches in it (one
+// status, any number of flags).
+function groupPasses<K extends string>(modes: Partial<Record<K, FilterMode>>, matched: K[]): boolean {
+  if (matched.some((k) => modes[k] === 'exclude')) return false
+  // `Object.values` on a Partial map: the modes of every row that's on.
+  const anyIncludes = Object.values(modes).includes('include')
+  return !anyIncludes || matched.some((k) => modes[k] === 'include')
 }
 
 export type CityGroup = { city: string; jobs: Job[] }

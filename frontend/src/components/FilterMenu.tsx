@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import type { Filters } from '../types'
-import { FLAG_ROWS, STATUS_ROWS, checkedRows, isChecked, resetPanel, rowId, toggleRow, type FilterRow } from '../lib/filters'
+import { FLAG_ROWS, STATUS_ROWS, activeRows, cycleRow, resetPanel, rowId, rowMode, setRow, type FilterRow } from '../lib/filters'
 import { textButton } from './styles'
 
 type Props = {
@@ -20,7 +20,8 @@ export default function FilterMenu({ filters, onChange, counts }: Props) {
   // A unique id to link the trigger to the panel for screen readers.
   const panelId = useId()
 
-  const count = checkedRows(filters).length
+  // Every row that isn't off, include or exclude.
+  const count = activeRows(filters).length
 
   // Listen on the whole document only while open, and remove the listeners
   // when it closes (the returned cleanup function), so a closed menu costs
@@ -108,30 +109,49 @@ type GroupProps = {
   onChange: (next: Filters) => void
 }
 
+// The box in front of each row, by state.
+const GLYPH = { off: '[ ]', include: '[+]', exclude: '[−]' } as const
+
 // One `// status` or `// flags` section. Each row is drawn with its marker
 // shape and colour, so the panel is also the legend.
+//
+// A row is a three-state toggle: click (or Space, which clicks a focused
+// button) cycles off → include → exclude → off. Shift+click and right-click
+// jump straight to exclude.
 function Group({ title, rows, filters, counts, onChange }: GroupProps) {
   return (
     <>
       <div className="band">// {title}</div>
       <div className="flex flex-col gap-1.5 px-6 py-3">
         {rows.map((row) => {
-          const checked = isChecked(filters, row)
+          const mode = rowMode(filters, row)
           return (
             <button
               key={rowId(row)}
               type="button"
-              onClick={() => onChange(toggleRow(filters, row))}
-              aria-pressed={checked}
-              className={`${textButton} flex items-center gap-2.5 ${checked ? 'text-text' : 'text-text-muted'}`}
+              onClick={(e) => onChange(e.shiftKey ? setRow(filters, row, 'exclude') : cycleRow(filters, row))}
+              // `contextmenu` is the right-click event; preventDefault stops
+              // the webview's own menu from opening on top.
+              onContextMenu={(e) => {
+                e.preventDefault()
+                onChange(setRow(filters, row, 'exclude'))
+              }}
+              // No `aria-pressed` (it only has on/off), so the state is
+              // spelled out in the accessible name instead.
+              aria-label={`${row.label}: ${mode ?? 'off'}`}
+              title="click to cycle · shift+click or right-click to exclude"
+              className={`${textButton} flex items-center gap-2.5 ${
+                mode === 'include' ? 'text-text' : mode === 'exclude' ? 'text-text-dim' : 'text-text-muted'
+              }`}
             >
-              {checked ? '[x]' : '[ ]'}
+              {GLYPH[mode ?? 'off']}
               {/* fixed-width box so labels line up whether the shape is the
                   wider rotated diamond or the square */}
               <span className="flex w-3.5 justify-center">
                 <span className={row.shape} data-color={row.color} />
               </span>
-              {row.label}
+              {/* Struck through when excluded: reads as "not this". */}
+              <span className={mode === 'exclude' ? 'line-through' : ''}>{row.label}</span>
               {/* `ml-auto` pushes the count to the right edge of the row */}
               <span className="ml-auto text-text-dim">{counts.get(rowId(row)) ?? 0}</span>
             </button>

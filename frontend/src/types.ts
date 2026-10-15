@@ -36,13 +36,20 @@ export type StatusKey = 'applied' | 'closing' | 'deadline' | 'rolling' | 'pastdu
 // The square flags. Keys of `FLAGS` in lib/jobs.ts.
 export type FlagKey = 'rejected' | 'stale' | 'borderline'
 
-// Checked rows in each filter group. Empty = that group doesn't filter.
-// Within a group it's OR (any checked row matches); across groups AND.
+// A filter row that isn't off. Include = show only matches; exclude = hide
+// matches.
+export type FilterMode = 'include' | 'exclude'
+
+// The panel's rows that aren't off, per group; a row missing from its map
+// is off. Any matching exclude hides a posting. Includes are OR within a
+// group and AND across groups, and a group with no includes doesn't filter.
+// `Partial<Record<K, V>>`: an object whose keys are some (not necessarily
+// all) of K.
 export type Filters = {
   query: string
   city: string // substring of the city, '' = any
-  statuses: StatusKey[]
-  flags: FlagKey[]
+  statuses: Partial<Record<StatusKey, FilterMode>>
+  flags: Partial<Record<FlagKey, FilterMode>>
 }
 
 // The status colours, shared by the stripe, the diamond and the flag
