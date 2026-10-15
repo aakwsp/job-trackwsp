@@ -27,6 +27,16 @@ type Props = {
 // PIPELINE: four stage columns (applied → assessment → interview → offer),
 // then a collapsed band of closed ones. Every entry opens the same record
 // as JOBS does, on its application tab.
+// The first COLUMN_CAP entries, unless the column is expanded. The
+// selected entry is always included: one moved with ← / → can land past
+// the cap, and it must stay visible with its outline.
+function capped(entries: Application[], all: boolean, selectedId: number | null): Application[] {
+  if (all || entries.length <= COLUMN_CAP) return entries
+  const head = entries.slice(0, COLUMN_CAP)
+  const selected = entries.find((a) => a.id === selectedId)
+  return selected && !head.includes(selected) ? [...head, selected] : head
+}
+
 export default function Pipeline({ apps, query, onQuery, selectedId, notice, onSelect, onAdvance, onAdd }: Props) {
   const [adding, setAdding] = useState(false)
   // Columns showing everything rather than the first COLUMN_CAP.
@@ -101,7 +111,7 @@ export default function Pipeline({ apps, query, onQuery, selectedId, notice, onS
           <Column
             key={stage.key}
             stage={stage}
-            entries={uncapped.has(stage.key) ? entries : entries.slice(0, COLUMN_CAP)}
+            entries={capped(entries, uncapped.has(stage.key), selectedId)}
             total={entries.length}
             searching={query.trim() !== ''}
             selectedId={selectedId}

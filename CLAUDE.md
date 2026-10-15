@@ -106,8 +106,10 @@ lowercase, hairline dividers, zero border radius anywhere, no shadows.
 - Secrets live in `.env` (gitignored). `.env.example` lists the keys with empty
   values. Never commit a token; never paste one into `scheduler/*.md`, which
   keep `{URL}` / `{TOKEN}` placeholders.
-- Branches are named `moshi/jt-<n>`; commits start with `JT-<n>:`. Work is
-  tracked in Linear (team key `JT`).
+- Branches are named `moshi/jt-<n>`. Work is tracked in Linear (team key
+  `JT`).
+- Commit messages and PR titles use `moshi/jt-<n>: <lowercase summary>`,
+  e.g. `moshi/jt-35: arrow keys in pipeline`.
 - The user is learning frontend — explain non-obvious React and CSS choices
   briefly in comments or in the reply, rather than silently doing the clever
   thing.

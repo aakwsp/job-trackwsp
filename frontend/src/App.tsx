@@ -10,7 +10,7 @@ import CityGroup from './components/CityGroup'
 import Record from './components/record/Record'
 import type { RecordFrom, Tab } from './lib/record'
 import Pipeline from './components/pipeline/Pipeline'
-import { stageCounts } from './lib/applications'
+import { isOpen, nextStage, stageCounts } from './lib/applications'
 import TopStrip from './components/TopStrip'
 import AppHeader from './components/AppHeader'
 import Hero from './components/Hero'
@@ -61,6 +61,9 @@ export default function App() {
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
   const [record, setRecord] = useState<OpenRecord | null>(null)
+  // The pipeline entry last moved with ← / →. Keys keep acting on it, and
+  // it keeps its outline, until the mouse moves onto a different entry.
+  const [stickyAppId, setStickyAppId] = useState<number | null>(null)
   // PIPELINE's search. Here rather than in Pipeline, which remounts on every
   // page switch, so it survives leaving and coming back like JOBS' filters.
   const [pipelineQuery, setPipelineQuery] = useState('')
@@ -143,6 +146,7 @@ export default function App() {
     // An open record belongs to the page it was opened on. Unmounting it
     // saves its notes (see Record), so nothing typed is lost.
     setRecord(null)
+    setStickyAppId(null)
     setPage(p)
   }
 
@@ -188,6 +192,21 @@ export default function App() {
     return () => clearTimeout(t)
   }, [toast])
 
+  // Release the sticky entry once the mouse really moves onto another one.
+  // Only real movement counts (`movementX/Y`): after a move the columns
+  // reflow, and a different entry can end up under a cursor that never
+  // moved, which mustn't steal the selection.
+  useEffect(() => {
+    if (stickyAppId === null) return
+    function onMove(e: MouseEvent) {
+      if (e.movementX === 0 && e.movementY === 0) return
+      const over = e.target instanceof Element ? e.target.closest<HTMLElement>('[data-app-id]') : null
+      if (over && Number(over.dataset.appId) !== stickyAppId) setStickyAppId(null)
+    }
+    document.addEventListener('mousemove', onMove)
+    return () => document.removeEventListener('mousemove', onMove)
+  }, [stickyAppId])
+
   // Hover shortcuts on list items: "a" toggles applied on the posting under
   // the mouse (see `pressA`), "o" opens it. Items carry `data-job-id` / `data-app-id`, so
   // instead of tracking hover in state, the handler asks the DOM which item
@@ -201,7 +220,33 @@ export default function App() {
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       // Typing in search, city, notes or the add form: letters are text.
       if (e.target instanceof Element && e.target.closest('input, textarea, select')) return
-      if (e.key !== 'a' && e.key !== 'o') return
+      // "u" takes back whatever the bottom line just reported.
+      if (e.key === 'u' && toast?.onUndo) {
+        e.preventDefault()
+        runToastUndo()
+        return
+      }
+      const arrow = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+      // Shift+arrow is text selection; ctrl+arrow (page switching) already
+      // returned above.
+      if (arrow && e.shiftKey) return
+      if (!arrow && e.key !== 'a' && e.key !== 'o') return
+
+      // ← / → (JT-35): pipeline entries only. The entry moved last stays the
+      // target (`stickyAppId`) until the mouse moves onto another one, so
+      // repeated presses follow it across columns.
+      if (arrow) {
+        if (page !== 'pipeline') return
+        const hovered = document.querySelector<HTMLElement>('[data-app-id]:hover')
+        const focused =
+          document.activeElement instanceof HTMLElement ? document.activeElement.closest<HTMLElement>('[data-app-id]') : null
+        const id = stickyAppId ?? Number((hovered ?? focused)?.dataset.appId ?? NaN)
+        const target = apps.find((a) => a.id === id)
+        if (!target) return
+        e.preventDefault()
+        stepApp(target, arrow)
+        return
+      }
 
       const sel = '[data-job-id], [data-app-id]'
       const el =
@@ -338,17 +383,59 @@ export default function App() {
     }
   }
 
+  // ← / → on a pipeline entry or in the record (JT-35). → is the same Rust
+  // command as [ → next stage ]; ← is the record's undo, which removes the
+  // latest event and recomputes the status in one transaction. Hard stops:
+  // → does nothing at offer or once closed (closing is "r"), ← does nothing
+  // at applied (unapplying is double-"a"). Rust enforces the same stops.
+  async function stepApp(app: Application, dir: 1 | -1) {
+    if (dir === 1 ? !nextStage(app.status) : app.status === 'applied') return
+    const removed = app.status // what ← takes away, for its undo
+    try {
+      const updated = await (dir === 1 ? api.advanceStage : api.undoEvent)(app.id)
+      applyMoved(updated)
+      setStickyAppId(updated.id)
+      // The entry has jumped columns; make sure it's still on screen. After
+      // the next paint, once React has moved it (`requestAnimationFrame`).
+      requestAnimationFrame(() =>
+        document.querySelector(`[data-app-id="${updated.id}"]`)?.scrollIntoView({ block: 'nearest' }),
+      )
+      // Undo: → is undone by a step back; ← by putting the removed step
+      // back (a fresh event, dated now). A removed "withdrawn" has no
+      // command to recreate it, so that one offers no undo.
+      const undo =
+        dir === 1
+          ? () => move(api.undoEvent, updated)
+          : isOpen(removed)
+            ? () => move(api.advanceStage, updated)
+            : removed === 'rejected'
+              ? () => move(api.markRejected, updated)
+              : undefined
+      setToast({ text: `${updated.company.toLowerCase()} ${dir === 1 ? '→' : '←'} ${updated.status}`, onUndo: undo })
+    } catch (e) {
+      setToast({ text: String(e) })
+    }
+  }
+
+  // State after any pipeline move: the application, plus the JOBS row's
+  // copy of its status (for the rejected square).
+  function applyMoved(updated: Application) {
+    replaceApp(updated)
+    if (updated.job_id !== null) patchJob(updated.job_id, { app_status: updated.status })
+  }
+
+  function runToastUndo() {
+    toast?.onUndo?.()
+    setToast(null)
+  }
+
   // The pipeline moves. Not optimistic: the event and the new status are
   // written in one transaction in Rust, and the column only changes once
   // that has committed. It's a local SQLite write, so there's no visible
   // wait.
   async function move(call: (id: number) => Promise<Application>, app: Application) {
     try {
-      const updated = await call(app.id)
-      replaceApp(updated)
-      // The JOBS row carries the status too (for the rejected square), so
-      // keep it in step.
-      if (updated.job_id !== null) patchJob(updated.job_id, { app_status: updated.status })
+      applyMoved(await call(app.id))
     } catch (e) {
       setNotice(String(e))
     }
@@ -577,7 +664,7 @@ export default function App() {
                     apps={apps}
                     query={pipelineQuery}
                     onQuery={setPipelineQuery}
-                    selectedId={recordApp?.id ?? null}
+                    selectedId={recordApp?.id ?? stickyAppId}
                     notice={noticeLine}
                     onSelect={(app) => setRecord({ jobId: app.job_id, appId: app.id, from: 'pipeline', tab: 'application' })}
                     onAdvance={(app) => move(api.advanceStage, app)}
@@ -612,6 +699,7 @@ export default function App() {
           onAdvance={(app) => move(api.advanceStage, app)}
           onReject={(app) => move(api.markRejected, app)}
           onUndoEvent={(app) => move(api.undoEvent, app)}
+          onStep={stepApp}
           onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
         />
       )}
@@ -631,13 +719,12 @@ export default function App() {
               <span className="text-text-dim">—</span>
               <button
                 type="button"
-                onClick={() => {
-                  toast.onUndo?.()
-                  setToast(null)
-                }}
+                onClick={runToastUndo}
                 className="cursor-pointer hover:text-text"
               >
-                [ undo ]
+                {/* "u" works from the lists; with a record open, "u" is the
+                    record's own undo, so the hint is left off. */}
+                [ undo{!record && <span className="text-text-dim"> · u</span>} ]
               </button>
             </>
           )}
