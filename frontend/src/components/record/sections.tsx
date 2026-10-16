@@ -2,7 +2,7 @@ import type { Application, Job, Stage, TimelineNode } from '../../types'
 import { daysLeft, daysSince, isClosingSoon, isExpired, localYmd } from '../../lib/jobs'
 import { agoIso, stageColor, stageTrack } from '../../lib/applications'
 import type { Tab } from '../../lib/record'
-import Timeline from '../Timeline'
+import RecordTimeline from './RecordTimeline'
 import { eventLabel, localDay } from '../../lib/inbox'
 import {
   Band,
@@ -205,7 +205,7 @@ function Recent({ m, pad, noTop }: SectionProps & { noTop: boolean }) {
         <h3 className="font-mono">// recent</h3>
       </Band>
       {recent.length > 0 ? (
-        <Timeline nodes={recent} large onPick={m.openEmail} />
+        <RecordTimeline nodes={recent} pad={pad} onOpenInInbox={m.openEmail} />
       ) : (
         <p className={`pt-4 pb-2 text-meta text-text-dim ${pad}`}>nothing yet.</p>
       )}
@@ -525,7 +525,7 @@ export function ApplicationSection({ m, pad }: SectionProps) {
           <h3 className="font-mono">// timeline</h3>
         </Band>
         <div>
-          <Timeline nodes={m.timeline ?? []} large onPick={m.openEmail} />
+          <RecordTimeline nodes={m.timeline ?? []} pad={pad} onOpenInInbox={m.openEmail} />
         </div>
       </section>
 
@@ -567,15 +567,15 @@ export function ApplicationSection({ m, pad }: SectionProps) {
 
 export function EmailsSection({ m, pad }: SectionProps) {
   const company = m.job?.company ?? m.app?.company ?? 'them'
-  // The same timeline as INBOX's, large; a node opens that email there.
+  // The same timeline as INBOX's, large; a diamond opens that email inline.
   const n = (m.timeline ?? []).filter((t) => t.kind === 'email').length
   if (m.app && m.timeline && n > 0)
     return (
       <div>
-        <Band pad={pad} noTop aside={`${n} ${n === 1 ? 'email' : 'emails'} · ◆ opens in inbox`}>
+        <Band pad={pad} noTop aside={`${n} ${n === 1 ? 'email' : 'emails'} · ◆ opens the email`}>
           <h3 className="font-mono">// timeline</h3>
         </Band>
-        <Timeline nodes={m.timeline} large onPick={m.openEmail} />
+        <RecordTimeline nodes={m.timeline} pad={pad} onOpenInInbox={m.openEmail} />
       </div>
     )
   return (

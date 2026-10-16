@@ -7,7 +7,7 @@ import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
 import InboxBar from './InboxBar'
 import { useReveal } from '../../lib/reveal'
-import { inboxFilterCounts, loadInboxFilters, matchesInboxFilters, saveInboxFilters, type InboxFilters } from '../../lib/inboxFilters'
+import { inboxFilterCounts, loadInboxFilters, matchesInboxFilters, saveInboxFilters, sectionOf, type InboxFilters } from '../../lib/inboxFilters'
 
 // INBOX (JT-18), from design/inbox/Inbox.dc.html: the list on the left
 // (about a quarter of the window, or a narrow strip when collapsed with
@@ -86,10 +86,13 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // else the newest. Not marked read: only an explicit open does that.
   const { openId, open } = inbox
   useEffect(() => {
+    // Not while an email from the record is being revealed (below): it
+    // may be hidden for a moment, until its section or filter opens.
+    if (inbox.revealId !== null) return
     if (openId !== null && rows.some((r) => r.id === openId)) return
     const first = checking[0] ?? all[0]
     if (first) open(first.id, false)
-  }, [rows, openId, checking, all, open])
+  }, [rows, openId, checking, all, open, inbox.revealId])
 
   // Keys: `m` read/unread, `g` by email / by job, ←/→ along the open
   // email's timeline. A ref keeps the handler reading current values
@@ -123,6 +126,29 @@ export default function Inbox({ inbox, top, connected }: Props) {
       ].map((r) => r.id),
     [checking, autoRows, checked, folded],
   )
+
+  // [ open in inbox → ] from the record (JT-41). Once the list has the
+  // email, one step per frame: clear the filters if they hide it, else
+  // unfold its section, else scroll it into view and mark the request
+  // done. Each step re-renders, which runs this again for the next one.
+  // The steps run in requestAnimationFrame (just before the next paint),
+  // which also lets the scroll happen after React has drawn the unfolded
+  // section.
+  const { revealId, revealed } = inbox
+  useEffect(() => {
+    if (revealId === null || inbox.rows === null) return
+    const raf = requestAnimationFrame(() => {
+      const row = allRows.find((r) => r.id === revealId)
+      // Not in the list (e.g. it was ignored since): nothing to show.
+      if (!row) return revealed()
+      if (!matchesInboxFilters(row, filters)) return changeFilters({})
+      const s = sectionOf(row)
+      if (folded.has(s)) return toggleFold(s)
+      document.querySelector(`[data-inbox-row="${revealId}"]`)?.scrollIntoView({ block: 'center' })
+      revealed()
+    })
+    return () => cancelAnimationFrame(raf)
+  })
 
   // After confirm / reject: the email leaves // checking now (patched
   // ahead of the reload), and the next checking email opens.
