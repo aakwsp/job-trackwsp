@@ -8,8 +8,9 @@ import { outlineButton, primaryButton } from '../record/parts'
 import Timeline from '../Timeline'
 import Select from '../Select'
 
-// The open email (design/inbox/Inbox.dc.html, right column): // email,
-// // extracted, // match, // actions. The body is plain text in a
+// The open email, top to bottom (JT-41): company · role and // timeline
+// pinned, then // email (+ [ open in gmail ]), // extracted, // match,
+// // actions. The body is plain text in a
 // <blockquote> with `white-space: pre-line`: email HTML is never rendered
 // (it was stripped to text when stored, and React escapes it anyway).
 
@@ -85,8 +86,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
   // there even when routing missed it).
   // The rows under // match. Quick picks: applications at the extracted
   // company (or the one typed in edit mode, so fixing the company refreshes
-  // them). Then whatever the "// other application" search finds, across
-  // all companies.
+  // them). Then whatever the "// search all companies" line finds.
   const quickCompany = editing && edits.company ? edits.company : (x?.company ?? null)
   const quick = quickPicks(detail, quickCompany, !(editing && edits.company))
   // Search text and the new-job form belong to one email, like editingFor.
@@ -332,7 +332,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         {canPick && (
           <div className="mt-2 flex h-9 items-center gap-3 border-b border-rule">
             <label htmlFor="other-application" className="shrink-0 text-[0.65625rem] tracking-[0.12em] text-text-muted uppercase">
-              // other application
+              // search all companies
             </label>
             <input
               id="other-application"
@@ -450,7 +450,7 @@ function quickPicks(d: InboxDetail, company: string | null, withCandidates: bool
   return out
 }
 
-// "// other application": every word of the query somewhere in company,
+// "// search all companies": every word of the query somewhere in company,
 // role or city; the quick picks aren't repeated.
 function searchApps(all: AppRef[], q: string, skip: AppRef[]): AppRef[] {
   const words = norm(q).split(' ').filter(Boolean)

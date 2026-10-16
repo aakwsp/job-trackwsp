@@ -69,6 +69,25 @@ export function useInbox(active: boolean, notify: Notify) {
     if (markRead) api.inboxSetRead(id, true).catch((e) => setError(String(e)))
   }, [])
 
+  // [ open in inbox → ] from the record (JT-41): open the email and ask
+  // INBOX to show it, which it does once its rows are in (unfold the
+  // section, clear a filter hiding it, scroll to it; see Inbox). The
+  // search is cleared here so the list it waits for has every email.
+  const [revealId, setRevealId] = useState<number | null>(null)
+  const reveal = useCallback(
+    (id: number) => {
+      // Rows from a search may not have it: drop them and wait for the
+      // full list (the fetch re-runs because `applied` changed).
+      if (applied !== '') setRows(null)
+      setQuery('')
+      setApplied('')
+      setRevealId(id)
+      open(id)
+    },
+    [open, applied],
+  )
+  const revealed = useCallback(() => setRevealId(null), [])
+
   // Runs a routing action, then reloads at once: the open email's detail
   // straight away (so [ use this ] etc. show their effect immediately),
   // and the lists via `version` (the event would too, maybe later).
@@ -111,6 +130,9 @@ export function useInbox(active: boolean, notify: Notify) {
     detail: detail && detail.email.id === openId ? detail : null,
     error,
     open,
+    revealId,
+    reveal,
+    revealed,
     act,
     patchRow,
     notify,

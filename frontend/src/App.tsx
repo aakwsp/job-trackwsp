@@ -804,9 +804,10 @@ export default function App() {
           onStep={stepApp}
           onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
           onOpenEmail={(id) => {
-            // Leaves the record and shows that email in INBOX.
+            // Leaves the record and shows that email in INBOX: selected,
+            // its section unfolded, scrolled into view.
             switchPage('inbox')
-            inbox.open(id)
+            inbox.reveal(id)
           }}
         />
       )}
