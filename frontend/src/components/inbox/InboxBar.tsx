@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { field, textButton } from '../styles'
+import OptionButton from '../OptionButton'
+import { useSqueeze } from '../../lib/useSqueeze'
 import type { MailSort } from '../../lib/inbox'
 import {
   READ_ROWS,
@@ -15,7 +17,8 @@ import {
 // from the same pieces (`field`, `textButton`, `.band`, `.reveal`,
 // marker / flag shapes), without touching the JOBS components: left, the
 // boxed search and [ filters ] + chips; right, sort (which is also the
-// view), the list fold and fold / unfold all sections.
+// view), the list fold and fold / unfold all sections. Always one line,
+// squeezing like JOBS' (`useSqueeze`).
 
 type Props = {
   searchRef: RefObject<HTMLInputElement | null>
@@ -35,8 +38,11 @@ type Props = {
 // `searchRef` is taken out of `p` so the linter doesn't treat every
 // prop as a ref.
 export default function InboxBar({ searchRef, ...p }: Props) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chips = activeInboxRows(p.filters).map(({ row, mode }) => `${row.key}:${mode}`)
+  const squeezed = useSqueeze(ref, chips.join(','))
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 text-meta">
+    <div ref={ref} className="flex flex-nowrap items-center gap-x-4 px-6 py-3 text-meta">
       <input
         ref={searchRef}
         type="search"
@@ -54,20 +60,22 @@ export default function InboxBar({ searchRef, ...p }: Props) {
         }}
         placeholder="search company / subject / body"
         aria-label="search company, role, subject, sender or body (/)"
-        className={`${field} w-80`}
+        className={`${field} w-80 ${squeezed ? 'min-w-0 shrink' : 'shrink-0'}`}
       />
-      <InboxFilterMenu filters={p.filters} onChange={p.onFilters} counts={p.counts} />
-      <InboxFilterChips filters={p.filters} onChange={p.onFilters} />
+      <div className="shrink-0">
+        <InboxFilterMenu filters={p.filters} onChange={p.onFilters} counts={p.counts} />
+      </div>
+      <InboxFilterChips filters={p.filters} onChange={p.onFilters} compact={squeezed} />
 
-      <span className="ml-auto flex items-center gap-3">
+      <span className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
         {/* Sort is the view switch (newest = by email, company = by
             job); keeps INBOX's underline for the active one. */}
         <span className="flex items-center gap-1">
           <span className="pr-0.5 text-text-dim">sort</span>
           {(['newest', 'company'] as MailSort[]).map((s) => (
-            <SortButton key={s} on={p.sort === s} onClick={() => p.onSort(s)}>
+            <OptionButton key={s} on={p.sort === s} onClick={() => p.onSort(s)}>
               {s}
-            </SortButton>
+            </OptionButton>
           ))}
         </span>
         <button
@@ -87,22 +95,6 @@ export default function InboxBar({ searchRef, ...p }: Props) {
         </button>
       </span>
     </div>
-  )
-}
-
-// The sort words: the active one in text colour with a hairline under it.
-function SortButton({ on, onClick, children }: { on: boolean; onClick: () => void; children: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={on}
-      className={`h-7 cursor-pointer appearance-none border-b bg-transparent px-1.5 hover:text-text ${
-        on ? 'border-text text-text' : 'border-transparent text-text-dim'
-      }`}
-    >
-      {children}
-    </button>
   )
 }
 
@@ -233,11 +225,19 @@ function Group({
 
 // Active rows as chips while the panel is closed, like JOBS' FilterChips:
 // each turns its row off.
-function InboxFilterChips({ filters, onChange }: { filters: InboxFilters; onChange: (f: InboxFilters) => void }) {
+function InboxFilterChips({
+  filters,
+  onChange,
+  compact,
+}: {
+  filters: InboxFilters
+  onChange: (f: InboxFilters) => void
+  compact: boolean
+}) {
   const rows = activeInboxRows(filters)
   if (rows.length === 0) return null
   return (
-    <span className="flex flex-wrap items-center gap-2">
+    <span className="flex shrink-0 items-center gap-2">
       {rows.map(({ row, mode }) => {
         const sign = mode === 'include' ? '+' : '−'
         return (
@@ -246,12 +246,13 @@ function InboxFilterChips({ filters, onChange }: { filters: InboxFilters; onChan
             type="button"
             onClick={() => onChange(setInboxRow(filters, row.key, null))}
             title={`clear "${sign} ${row.label}"`}
-            className={`flex cursor-pointer items-center gap-1.5 border border-rule-strong px-1.5 text-meta hover:border-text-muted hover:text-text ${
+            aria-label={`clear ${sign} ${row.label}`}
+            className={`flex cursor-pointer items-center gap-1.5 border whitespace-nowrap border-rule-strong px-1.5 text-meta hover:border-text-muted hover:text-text ${
               mode === 'include' ? 'text-text-muted' : 'text-text-dim'
             }`}
           >
             <span className={row.shape} data-color={row.color} />
-            {sign} {row.label} ×
+            {compact ? '×' : `${sign} ${row.label} ×`}
           </button>
         )
       })}
