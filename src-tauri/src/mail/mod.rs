@@ -619,7 +619,7 @@ mod tests {
         assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), ("pending", "ats: greenhouse-mail.io"));
         assert_eq!(rows[0].2.as_deref(), Some("2026-09-21T14:13:20Z"));
         assert_eq!(rows[0].3.as_deref(), Some(r#"["INBOX","CATEGORY_UPDATES"]"#));
-        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("ignored", "sent by you"));
+        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("ignored", "sent by me"));
         // The ignored one was stored without its content.
         assert_eq!(rows[1].3, None);
         let (body, snippet, subject): (Option<String>, Option<String>, Option<String>) = block_on(
@@ -631,6 +631,75 @@ mod tests {
 
         let stored = stored_ids(&pool, &["18f0a1b2c3d4e5f6".into(), "unknown".into()]).unwrap();
         assert_eq!(stored, HashSet::from(["18f0a1b2c3d4e5f6".to_string()]));
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn replies_in_an_existing_thread_are_stored_as_their_own_emails() {
+        // JT-42: a thread is never "already seen". The first message, a
+        // recruiter's reply from the company's own domain and the user's
+        // own reply all share one threadId; each is stored by its gmail_id.
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).expect("connect");
+        let first: mime::Message = serde_json::from_str(include_str!("testdata/greenhouse_alternative.json")).unwrap();
+        let thread = first.thread_id.clone().expect("fixture has a thread");
+        let reply = |id: &str, from: &str, labels: &[&str]| -> mime::Message {
+            let mut m: mime::Message = serde_json::from_str(include_str!("testdata/greenhouse_alternative.json")).unwrap();
+            m.id = id.into();
+            m.label_ids = labels.iter().map(|l| l.to_string()).collect();
+            for h in m.payload.as_mut().unwrap().headers.iter_mut() {
+                if h.name.eq_ignore_ascii_case("From") {
+                    h.value = from.into();
+                }
+                if h.name.eq_ignore_ascii_case("Subject") {
+                    h.value = "Re: Thank you for applying to Acme".into();
+                }
+            }
+            m
+        };
+        let applied = filter::Applied { domains: vec!["acme.com".into()], req_ids: vec![] };
+
+        assert_eq!(store(&pool, &first, &applied).unwrap(), Stored::Pending);
+        let recruiter = reply("reply-1", "Jane Recruiter <jane@acme.com>", &["INBOX"]);
+        let mine = reply("reply-2", "Me <me@example.com>", &["SENT"]);
+        assert_eq!(store(&pool, &recruiter, &applied).unwrap(), Stored::Pending);
+        assert_eq!(store(&pool, &mine, &applied).unwrap(), Stored::Ignored);
+        // A poll listing the whole thread again only skips what's stored.
+        let ids = [first.id.clone(), "reply-1".into(), "reply-2".into(), "reply-3".into()];
+        assert_eq!(stored_ids(&pool, &ids).unwrap(), ids[..3].iter().cloned().collect::<HashSet<_>>());
+
+        let rows: Vec<(String, String, String, Option<String>)> = block_on(
+            sqlx::query_as("SELECT gmail_id, status, filter_reason, thread_id FROM emails ORDER BY id").fetch_all(&pool),
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!((rows[1].1.as_str(), rows[1].2.as_str()), ("pending", "applied company: acme.com"));
+        assert_eq!(rows[1].3.as_deref(), Some(thread.as_str()));
+        // The user's own reply: metadata only, and the thread's other mail
+        // is untouched.
+        assert_eq!((rows[2].1.as_str(), rows[2].2.as_str()), ("ignored", "sent by me"));
+        assert_eq!(rows[2].3, None);
+        assert_eq!(rows[0].1, "pending");
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn old_sent_by_you_rows_are_renamed() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).expect("connect");
+        block_on(async {
+            sqlx::query("INSERT INTO emails (gmail_id, from_addr, subject, status, filter_reason) VALUES ('s', 'me@example.com', 'Re: x', 'ignored', 'sent by you')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::raw_sql(include_str!("../../migrations/0012_sent_by_me.sql")).execute(&pool).await.unwrap();
+        });
+        let reason: String = block_on(sqlx::query_scalar("SELECT filter_reason FROM emails").fetch_one(&pool)).unwrap();
+        assert_eq!(reason, "sent by me");
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
@@ -712,7 +781,7 @@ mod tests {
         block_on(
             sqlx::query(
                 "INSERT INTO emails (gmail_id, from_addr, subject, status, filter_reason)
-                 VALUES (?, 'x@us.greenhouse-mail.io', 'Thank you', 'ignored', 'sent by you')",
+                 VALUES (?, 'x@us.greenhouse-mail.io', 'Thank you', 'ignored', 'sent by me')",
             )
             .bind(&gh.id)
             .execute(&pool),
