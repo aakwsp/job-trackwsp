@@ -5,12 +5,12 @@ type Props = {
   onPage: (p: Page) => void
 }
 
-// "job tracker" on the left, the three view tabs on the right. The active
+// "job trackwsp" on the left, the three view tabs on the right. The active
 // tab is a solid parchment block with dark text; the others are plain text.
 export default function AppHeader({ page, onPage }: Props) {
   return (
     <header className="flex items-center justify-between border-b border-rule-strong px-4 py-3">
-      <span className="font-serif text-brand leading-none">job tracker</span>
+      <span className="font-serif text-brand leading-none">job trackwsp</span>
       <nav className="flex items-center gap-1">
         {PAGES.map((p, i) => (
           <button

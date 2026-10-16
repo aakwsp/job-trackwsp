@@ -1,10 +1,11 @@
 export type ViewMode = 'default' | 'compact' | 'line'
 
-export const VIEW_MODES: { mode: ViewMode; glyph: string; label: string }[] = [
-  // Placeholder glyphs until real icons land.
-  { mode: 'default', glyph: '⊞', label: 'default' },
-  { mode: 'compact', glyph: '⁘', label: 'compact' },
-  { mode: 'line', glyph: '≡', label: 'line' },
+// `word` is what the toolbar shows ("view def comp line"); `label` is the
+// full name, for the hover title.
+export const VIEW_MODES: { mode: ViewMode; word: string; label: string }[] = [
+  { mode: 'default', word: 'def', label: 'default' },
+  { mode: 'compact', word: 'comp', label: 'compact' },
+  { mode: 'line', word: 'line', label: 'line' },
 ]
 
 // Columns for the two card views, dropping one at a time as the window

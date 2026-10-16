@@ -1,8 +1,12 @@
+import { useRef } from 'react'
 import type { Filters } from '../types'
+import { activeRows } from '../lib/filters'
+import { useSqueeze } from '../lib/useSqueeze'
 import { VIEW_MODES, type ViewMode } from '../lib/view'
 import type { Scale } from '../lib/scale'
 import FilterChips from './FilterChips'
 import FilterMenu from './FilterMenu'
+import OptionButton from './OptionButton'
 import { field, textButton } from './styles'
 
 type Props = {
@@ -18,7 +22,8 @@ type Props = {
 }
 
 // The toolbar: search, city, [ filters ] + chips, then view modes and
-// collapse/expand on the right.
+// collapse/expand on the right. Always one line: when it doesn't fit, the
+// chips go shape-only and the search boxes shrink (`useSqueeze`).
 export default function FilterBar({
   filters,
   onChange,
@@ -29,15 +34,20 @@ export default function FilterBar({
   onCollapseAll,
   onExpandAll,
 }: Props) {
+  const ref = useRef<HTMLDivElement>(null)
+  const chips = activeRows(filters).map(({ row, mode }) => `${row.group}:${row.key}:${mode}`)
+  const squeezed = useSqueeze(ref, `${chips.join(',')}|${scale}`)
+  // Unsqueezed nothing may shrink, so overflow shows up to be measured.
+  const box = squeezed ? 'min-w-0 shrink' : 'shrink-0'
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-6 py-3 text-meta">
+    <div ref={ref} className="flex flex-nowrap items-center gap-x-4 px-6 py-3 text-meta">
       <input
         type="search"
         value={filters.query}
         onChange={(e) => onChange({ ...filters, query: e.target.value })}
         placeholder="search company / title"
         aria-label="search company or title"
-        className={`${field} w-56`}
+        className={`${field} w-56 ${box}`}
       />
 
       <input
@@ -46,30 +56,29 @@ export default function FilterBar({
         onChange={(e) => onChange({ ...filters, city: e.target.value })}
         placeholder="city"
         aria-label="city"
-        className={`${field} w-36`}
+        className={`${field} w-36 ${box}`}
       />
 
-      <FilterMenu filters={filters} onChange={onChange} counts={counts} />
-      <FilterChips filters={filters} onChange={onChange} />
+      <div className="shrink-0">
+        <FilterMenu filters={filters} onChange={onChange} counts={counts} />
+      </div>
+      <FilterChips filters={filters} onChange={onChange} compact={squeezed} />
 
       {/* `ml-auto` on the first item of a flex row pushes it and everything
           after it to the right edge. */}
-      <span className="ml-auto flex items-center gap-3">
+      <span className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
         <span className="mr-2 text-text-dim" title="ui scale · ctrl +/- · ctrl 0 to reset">
           {Math.round(scale * 100)}%
         </span>
-        {VIEW_MODES.map(({ mode, glyph, label }) => (
-          <button
-            key={mode}
-            type="button"
-            onClick={() => onView(mode)}
-            aria-pressed={view === mode}
-            title={label}
-            className={`cursor-pointer text-body hover:text-text ${view === mode ? 'text-text' : 'text-text-dim'}`}
-          >
-            {glyph}
-          </button>
-        ))}
+        {/* Same words-with-underline control as INBOX's sort. */}
+        <span className="flex items-center gap-1">
+          <span className="pr-0.5 text-text-dim">view</span>
+          {VIEW_MODES.map(({ mode, word, label }) => (
+            <OptionButton key={mode} on={view === mode} onClick={() => onView(mode)} title={label}>
+              {word}
+            </OptionButton>
+          ))}
+        </span>
         <button type="button" onClick={onCollapseAll} className={`${textButton} ml-2 text-text-muted`} title="collapse all">
           [ - ]
         </button>

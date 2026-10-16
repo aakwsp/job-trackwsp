@@ -1,10 +1,10 @@
 // The app's three top-level views. No router library: the active page is a
 // piece of state in App, and switching is just setting it. Nothing here
 // needs URLs (it's a desktop app with one window).
-export type Page = 'jobs' | 'queue' | 'pipeline'
+export type Page = 'jobs' | 'inbox' | 'pipeline'
 
-// Tab label, hero title and the one-line subtitle under it. Queue and
-// pipeline copy is placeholder until those views exist.
+// Tab label, hero title and the one-line subtitle under it. INBOX (was
+// QUEUE, JT-18) adds the gmail / gemini lines under its subtitle.
 export const PAGES: { page: Page; tab: string; title: string; subtitle: string }[] = [
   {
     page: 'jobs',
@@ -14,10 +14,10 @@ export const PAGES: { page: Page; tab: string; title: string; subtitle: string }
       'curated co-ops and software engineering placements. tracking application status, locations, and deadlines across active recruitment cycles.',
   },
   {
-    page: 'queue',
-    tab: 'queue',
-    title: 'queue',
-    subtitle: 'postings lined up to apply to next, in the order you plan to send them.',
+    page: 'inbox',
+    tab: 'inbox',
+    title: 'inbox',
+    subtitle: 'every job email, parsed and matched to its application.',
   },
   {
     page: 'pipeline',

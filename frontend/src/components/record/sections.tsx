@@ -1,7 +1,9 @@
-import type { Application, Job, Stage } from '../../types'
+import type { Application, Job, Stage, TimelineNode } from '../../types'
 import { daysLeft, daysSince, isClosingSoon, isExpired, localYmd } from '../../lib/jobs'
-import { agoIso, recordTimeline, stageColor, stageTrack, type TimelineEntry } from '../../lib/applications'
+import { agoIso, stageColor, stageTrack } from '../../lib/applications'
 import type { Tab } from '../../lib/record'
+import Timeline from '../Timeline'
+import { eventLabel, localDay } from '../../lib/inbox'
 import {
   Band,
   Dated,
@@ -33,6 +35,10 @@ export type RecordModel = {
   undo: () => void
   // Switches the record to another tab (the summary's "→" links).
   goTo: (tab: Tab) => void
+  // The one timeline (JT-18): events and emails, oldest first; null while
+  // loading. Not applied yet: just the posting's first sighting.
+  timeline: TimelineNode[] | null
+  openEmail: (emailId: number) => void
   notes: {
     id: string
     value: string
@@ -191,20 +197,19 @@ function TabLink({ m, tab, children }: { m: RecordModel; tab: Tab; children: str
 }
 
 function Recent({ m, pad, noTop }: SectionProps & { noTop: boolean }) {
-  // The three latest entries, newest first. `slice(-3)` takes them from the
-  // end of the oldest-first list; `reverse` on that copy is safe.
-  const recent = recordTimeline(m.job, m.app).slice(-3).reverse()
+  // The three latest nodes of the timeline, still oldest → newest.
+  const recent = (m.timeline ?? []).slice(-3)
   return (
     <section>
-      <Band pad={pad} noTop={noTop} aside="newest first">
+      <Band pad={pad} noTop={noTop} aside="latest three">
         <h3 className="font-mono">// recent</h3>
       </Band>
-      <div className={`pt-4 ${pad}`}>
-        {recent.length > 0 ? (
-          <TimelineList entries={recent} />
-        ) : (
-          <p className="pb-2 text-meta text-text-dim">nothing yet.</p>
-        )}
+      {recent.length > 0 ? (
+        <Timeline nodes={recent} large onPick={m.openEmail} />
+      ) : (
+        <p className={`pt-4 pb-2 text-meta text-text-dim ${pad}`}>nothing yet.</p>
+      )}
+      <div className={pad}>
         <TabLink m={m} tab="application">
           [ full timeline → ]
         </TabLink>
@@ -213,16 +218,23 @@ function Recent({ m, pad, noTop }: SectionProps & { noTop: boolean }) {
   )
 }
 
-// Gmail parsing isn't built yet, so there's never an email to show. When
-// it lands, the newest parsed email for this application goes here.
+// The newest email matched to this application (from the timeline).
 function LatestEmail({ m, pad }: SectionProps) {
+  const latest = (m.timeline ?? []).filter((t) => t.kind === 'email').at(-1)
   return (
     <section className="mt-4">
       <Band pad={pad}>
         <h3 className="font-mono">// latest email</h3>
       </Band>
       <div className={`pt-4 ${pad}`}>
-        <p className="font-serif text-[1.125rem] text-text-dim">[ no emails yet ]</p>
+        {latest && latest.email_id !== null ? (
+          <button type="button" onClick={() => m.openEmail(latest.email_id!)} className={`${ghostButton} -ml-1 block text-meta`}>
+            {localDay(latest.at)} · {eventLabel(latest.event_type)}
+            {latest.status === 'checking' ? ' · in checking' : ''} ↗
+          </button>
+        ) : (
+          <p className="font-serif text-[1.125rem] text-text-dim">[ no emails yet ]</p>
+        )}
         <TabLink m={m} tab="emails">
           [ all emails → ]
         </TabLink>
@@ -375,44 +387,6 @@ function OpenButton({ m }: { m: RecordModel }) {
   )
 }
 
-// Date · mark · label · kind, with a 1px rail joining each mark to the next.
-function TimelineList({ entries }: { entries: TimelineEntry[] }) {
-  return (
-    <ol className="m-0 list-none p-0 pb-1.5">
-      {entries.map((t, i) => {
-        const isApp = t.kind === 'application'
-        return (
-          // Index in the key: two entries can share a date and label
-          // (say, interview → undo → interview again).
-          <li
-            key={`${i}-${t.date}-${t.label}`}
-            className="grid min-h-[2.375rem] grid-cols-[5.75rem_1rem_minmax(0,1fr)_auto] gap-x-3 text-meta leading-normal"
-          >
-            <span className="text-text-muted">{t.date}</span>
-            {/* The rail is absolutely placed so it can run past the row's
-                padding and join the next mark. */}
-            <span aria-hidden className="relative block">
-              {i < entries.length - 1 && (
-                <span className="absolute top-[0.9375rem] -bottom-1 left-[0.4375rem] w-px bg-rule-strong" />
-              )}
-              <span
-                className={`absolute ${
-                  // Sizes come from `.mark-sm` / `.mark-xs`, not a Tailwind
-                  // `size-*`: see the note on them in index.css.
-                  isApp ? 'marker mark-sm top-1.5 left-1' : 'flag mark-xs top-[0.4375rem] left-[0.3125rem]'
-                } ${t.color ? '' : isApp ? 'bg-text-dim' : 'bg-text-muted'}`}
-                data-color={t.color ?? undefined}
-              />
-            </span>
-            <span className={isApp ? 'text-text' : 'text-text-muted'}>{t.label}</span>
-            <span className="text-micro text-text-dim">{t.kind}</span>
-          </li>
-        )
-      })}
-    </ol>
-  )
-}
-
 // ── posting · application · emails ───────────────────────────────────────
 
 export function PostingSection({ m, pad }: SectionProps) {
@@ -550,8 +524,8 @@ export function ApplicationSection({ m, pad }: SectionProps) {
         <Band pad={pad} aside="oldest first">
           <h3 className="font-mono">// timeline</h3>
         </Band>
-        <div className={`pt-[1.125rem] ${pad}`}>
-          <TimelineList entries={recordTimeline(job, app)} />
+        <div>
+          <Timeline nodes={m.timeline ?? []} large onPick={m.openEmail} />
         </div>
       </section>
 
@@ -593,6 +567,17 @@ export function ApplicationSection({ m, pad }: SectionProps) {
 
 export function EmailsSection({ m, pad }: SectionProps) {
   const company = m.job?.company ?? m.app?.company ?? 'them'
+  // The same timeline as INBOX's, large; a node opens that email there.
+  const n = (m.timeline ?? []).filter((t) => t.kind === 'email').length
+  if (m.app && m.timeline && n > 0)
+    return (
+      <div>
+        <Band pad={pad} noTop aside={`${n} ${n === 1 ? 'email' : 'emails'} · ◆ opens in inbox`}>
+          <h3 className="font-mono">// timeline</h3>
+        </Band>
+        <Timeline nodes={m.timeline} large onPick={m.openEmail} />
+      </div>
+    )
   return (
     <Empty title="[ no emails yet ]" pad={pad}>
       parsed mail from {company.toLowerCase()} will land here, classified as it arrives.

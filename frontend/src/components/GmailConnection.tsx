@@ -26,11 +26,11 @@ export function MailStatusLine({ mail, busy }: { mail: MailStatus | null; busy: 
   const dot = <span className="text-text-dim"> · </span>
   return (
     <>
-      <span className="text-text">{mail.total}</span> emails{dot}
-      <span className="text-text">{mail.last_new}</span> new since last check{dot}
-      <span className="text-text">{mail.parsed}</span> parsed{dot}
-      <span className="text-text">{mail.waiting}</span> waiting
-      {mail.extracting && <span className="text-text-dim"> (parsing…)</span>}
+      {/* "160 fetched · 124 ignored · last checked 17:20". What's left is
+          INBOX's list, counted on the right of the hero. */}
+      <span className="text-text">{mail.total}</span> fetched{dot}
+      <span className="text-text">{mail.ignored}</span> ignored
+      {mail.extracting && <span className="text-text-dim"> (parsing {mail.waiting}…)</span>}
       {dot}last checked <span className="text-text">{hhmm(mail.last_checked_at)}</span>
       {mail.extract_error && <span className="mt-1 block text-pink">{mail.extract_error}</span>}
     </>
@@ -149,20 +149,6 @@ export function GeminiKeyRow({ onChanged }: { onChanged: () => void }) {
       </button>
       {error && <span className="ml-4 text-pink">{error}</span>}
     </span>
-  )
-}
-
-// [ check mail ] at the hero's right edge, as on the board: 36px, outlined.
-export function CheckMailButton({ busy, onCheck }: { busy: boolean; onCheck: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onCheck}
-      disabled={busy}
-      className="inline-flex h-9 shrink-0 cursor-pointer items-center border border-rule-strong px-3.5 text-[0.71875rem] text-text hover:border-text-muted hover:bg-bg-hover disabled:cursor-wait disabled:opacity-50"
-    >
-      {busy ? '[ checking… ]' : '[ check mail ]'}
-    </button>
   )
 }
 

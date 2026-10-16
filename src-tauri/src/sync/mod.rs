@@ -204,7 +204,7 @@ fn fetch_postings(
 /// One posting's worth of the three lookups code.gs does before deciding
 /// insert vs. update vs. merge — `job_key` first, then `triple`, then
 /// `url_norm`, in that order (CLAUDE.md, "Identity and deduplication").
-async fn find_existing(
+pub(crate) async fn find_existing(
     pool: &SqlitePool,
     key: &str,
     trip: &str,
@@ -388,7 +388,8 @@ fn removal_allowed(returned: usize, live: i64) -> bool {
 
 /// Marks every live row the sync didn't see as removed now. Skips rows with
 /// an application: the user applied to it, so it stays on the list whatever
-/// the sheet does. `seen` goes in as a JSON array and SQLite's `json_each`
+/// the sheet does. Skips manual postings too (`source = 'manual'`, made in
+/// INBOX): they were never in the sheet, so their absence means nothing. `seen` goes in as a JSON array and SQLite's `json_each`
 /// unpacks it, which avoids building an `IN (?, ?, ...)` list of a few
 /// hundred placeholders.
 async fn mark_removed(pool: &SqlitePool, seen: &[i64]) -> Result<u32, SyncError> {
@@ -396,6 +397,7 @@ async fn mark_removed(pool: &SqlitePool, seen: &[i64]) -> Result<u32, SyncError>
     let result = sqlx::query(
         "UPDATE jobs SET removed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
          WHERE removed_at IS NULL
+           AND COALESCE(source, '') <> 'manual'
            AND id NOT IN (SELECT value FROM json_each(?))
            AND NOT EXISTS (SELECT 1 FROM applications a WHERE a.job_id = jobs.id)",
     )
@@ -411,7 +413,8 @@ async fn mark_removed(pool: &SqlitePool, seen: &[i64]) -> Result<u32, SyncError>
 async fn apply(pool: &SqlitePool, fetched: Fetched) -> Result<SyncCounts, SyncError> {
     // Counted before the upsert, so the guard compares the response with
     // what we had, not with what the response itself just added.
-    let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE removed_at IS NULL")
+    // Manual postings aren't the sheet's, so they don't count either.
+    let live: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE removed_at IS NULL AND COALESCE(source, '') <> 'manual'")
         .fetch_one(pool)
         .await?;
 
@@ -670,6 +673,26 @@ mod tests {
             assert_eq!(removed_titles(&pool).await, ["gone"]);
         });
 
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn removal_pass_never_touches_manual_jobs() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        tauri::async_runtime::block_on(async {
+            apply(&pool, sheet(&["kept", "gone"])).await.unwrap();
+            sqlx::query("INSERT INTO jobs (job_key, company, title, triple, source) VALUES ('m', 'Acme', 'mine', 'm', 'manual')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            // 1 of 2 sheet rows is half: the pass runs (the manual one
+            // doesn't count), and only "gone" goes.
+            let c = apply(&pool, sheet(&["kept"])).await.unwrap();
+            assert!(!c.removal_skipped);
+            assert_eq!(removed_titles(&pool).await, ["gone"]);
+        });
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }

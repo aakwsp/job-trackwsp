@@ -2,6 +2,7 @@ mod applications;
 mod db;
 mod extract;
 mod gmail;
+mod inbox;
 mod jobs;
 mod mail;
 mod routing;
@@ -319,7 +320,11 @@ async fn mail_restore(app: tauri::AppHandle, gmail_id: String) -> Result<(), mai
         app,
         move |app| {
             let creds = gmail_credentials(app).map_err(mail::MailError::Gmail)?;
-            mail::restore(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, &gmail_id)
+            mail::restore(&app.state::<gmail::GmailState>(), &app.state::<SqlitePool>(), &creds, &gmail_id)?;
+            // Re-parse it now (extraction then routes it), and refresh INBOX.
+            inbox_changed(app);
+            spawn_extraction(app.clone());
+            Ok(())
         },
         |e| mail::MailError::Api(mail::api::ApiError::Http(format!("mail task failed: {e}"))),
     )
@@ -443,6 +448,7 @@ fn spawn_routing(app: tauri::AppHandle) {
             Ok(rows) if !rows.is_empty() => {
                 let auto = rows.iter().filter(|r| r.decision.route == routing::Route::Auto).count();
                 log::info!("routing: {auto} auto, {} checking", rows.len() - auto);
+                inbox_changed(&app);
             }
             Ok(_) => {}
             Err(e) => log::error!("routing failed: {e}"),
@@ -485,27 +491,192 @@ async fn route_confirm(
     application_id: Option<i64>,
     create_from_job: Option<i64>,
 ) -> Result<(), String> {
-    off_main_thread(app, move |app| routing::confirm(&app.state::<SqlitePool>(), email_id, application_id, create_from_job), |e| e)
-        .await
+    off_main_thread(
+        app,
+        move |app| {
+            routing::confirm(&app.state::<SqlitePool>(), email_id, application_id, create_from_job)?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
 }
 
 /// INBOX: the extraction or match is wrong / doesn't matter.
 #[tauri::command]
 async fn route_reject(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
-    off_main_thread(app, move |app| routing::reject(&app.state::<SqlitePool>(), email_id), |e| e).await
+    off_main_thread(
+        app,
+        move |app| {
+            routing::reject(&app.state::<SqlitePool>(), email_id)?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
+}
+
+/// INBOX [ + new job ]: a manual posting, an application on it dated from
+/// the email, and the email applied to it, in one transaction. Returns the
+/// application id. JOBS and PIPELINE reload on `inbox-changed`.
+#[tauri::command]
+async fn route_new_job(app: tauri::AppHandle, email_id: i64, job: routing::NewJob) -> Result<i64, String> {
+    off_main_thread(
+        app,
+        move |app| {
+            let id = routing::new_job(&app.state::<SqlitePool>(), email_id, job)?;
+            inbox_changed(app);
+            Ok(id)
+        },
+        |e| e,
+    )
+    .await
+}
+
+/// INBOX: takes back a reject (the bottom line's [ undo ]).
+#[tauri::command]
+async fn route_unreject(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
+    off_main_thread(
+        app,
+        move |app| {
+            routing::unreject(&app.state::<SqlitePool>(), email_id)?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
 }
 
 /// INBOX: correct the extracted fields and/or the matched application.
 #[tauri::command]
 async fn route_edit(app: tauri::AppHandle, email_id: i64, edit: routing::Edit) -> Result<routing::Decision, String> {
-    off_main_thread(app, move |app| routing::edit(&app.state::<SqlitePool>(), email_id, edit), |e| e).await
+    off_main_thread(
+        app,
+        move |app| {
+            let d = routing::edit(&app.state::<SqlitePool>(), email_id, edit)?;
+            inbox_changed(app);
+            Ok(d)
+        },
+        |e| e,
+    )
+    .await
 }
 
 /// INBOX: undo an auto-applied (or confirmed) email; removes the event it
 /// wrote.
 #[tauri::command]
 async fn route_undo(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
-    off_main_thread(app, move |app| routing::undo(&app.state::<SqlitePool>(), email_id), |e| e).await
+    off_main_thread(
+        app,
+        move |app| {
+            routing::undo(&app.state::<SqlitePool>(), email_id)?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
+}
+
+// ── INBOX (JT-18) ────────────────────────────────────────────────────────
+
+fn inbox_changed(app: &tauri::AppHandle) {
+    let _ = app.emit("inbox-changed", ());
+}
+
+/// Every email INBOX lists (never ignored or blocked), newest first.
+#[tauri::command]
+async fn inbox_list(app: tauri::AppHandle, query: Option<String>) -> Result<Vec<inbox::InboxRow>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::list(&app.state::<SqlitePool>(), query.as_deref()).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
+}
+
+/// The "n ignored" list: sender, subject, date only.
+#[tauri::command]
+async fn inbox_ignored(app: tauri::AppHandle) -> Result<Vec<inbox::IgnoredRow>, String> {
+    off_main_thread(app, |app| inbox::ignored(&app.state::<SqlitePool>()).map_err(|e| e.to_string()), |e| e).await
+}
+
+/// One email's detail pane.
+#[tauri::command]
+async fn inbox_detail(app: tauri::AppHandle, email_id: i64) -> Result<Option<inbox::Detail>, String> {
+    off_main_thread(app, move |app| inbox::detail(&app.state::<SqlitePool>(), email_id).map_err(|e| e.to_string()), |e| e).await
+}
+
+/// Opening an email marks it read; `m` toggles.
+#[tauri::command]
+async fn inbox_set_read(app: tauri::AppHandle, email_id: i64, read: bool) -> Result<(), String> {
+    off_main_thread(
+        app,
+        move |app| {
+            inbox::set_read(&app.state::<SqlitePool>(), email_id, read).map_err(|e| e.to_string())?;
+            inbox_changed(app);
+            Ok(())
+        },
+        |e| e,
+    )
+    .await
+}
+
+/// [ open in gmail ↗ ]: the email's thread in the browser, in the connected
+/// account. The URL is built here from stored ids, never taken from mail.
+#[tauri::command]
+async fn inbox_open_in_gmail(app: tauri::AppHandle, email_id: i64) -> Result<(), String> {
+    off_main_thread(
+        app,
+        move |app| {
+            let pool = app.state::<SqlitePool>();
+            let (gmail_id, thread): (String, Option<String>) = tauri::async_runtime::block_on(
+                sqlx::query_as("SELECT gmail_id, thread_id FROM emails WHERE id = ?").bind(email_id).fetch_one(&*pool),
+            )
+            .map_err(|e| e.to_string())?;
+            let account: Option<String> = tauri::async_runtime::block_on(
+                sqlx::query_scalar("SELECT value FROM settings WHERE key = 'gmail_address'").fetch_optional(&*pool),
+            )
+            .map_err(|e| e.to_string())?;
+            // Ids are hex from Gmail; keep only that, so nothing odd ends up
+            // in the URL.
+            let id: String = thread.unwrap_or(gmail_id).chars().filter(|c| c.is_ascii_hexdigit()).collect();
+            let user: String = account
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || "@._+-".contains(*c))
+                .collect();
+            let url = format!("https://mail.google.com/mail/?authuser={user}#all/{id}");
+            app.opener().open_url(url, None::<&str>).map_err(|e| e.to_string())
+        },
+        |e| e,
+    )
+    .await
+}
+
+/// INBOX's by-job list: applications with matched emails.
+#[tauri::command]
+async fn inbox_jobs(app: tauri::AppHandle, query: Option<String>) -> Result<Vec<inbox::JobRow>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::jobs(&app.state::<SqlitePool>(), query.as_deref()).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
+}
+
+/// One application's timeline, events and emails, oldest first (the record).
+#[tauri::command]
+async fn app_timeline(app: tauri::AppHandle, application_id: i64) -> Result<Vec<inbox::TimelineNode>, String> {
+    off_main_thread(
+        app,
+        move |app| inbox::timeline(&app.state::<SqlitePool>(), application_id).map_err(|e| e.to_string()),
+        |e| e,
+    )
+    .await
 }
 
 /// Opens a posting in the system browser. Done from Rust rather than
@@ -578,7 +749,16 @@ pub fn run() {
             route_confirm,
             route_reject,
             route_edit,
-            route_undo
+            route_undo,
+            route_unreject,
+            route_new_job,
+            inbox_list,
+            inbox_ignored,
+            inbox_detail,
+            inbox_set_read,
+            inbox_open_in_gmail,
+            inbox_jobs,
+            app_timeline
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -625,5 +805,58 @@ mod tests {
                 .unwrap()
         });
         assert_eq!(n, 42);
+    }
+
+    /// One-off (JT-18): mail the old List-Unsubscribe rule ignored, re-fetched
+    /// from Gmail and run through extraction and routing (see
+    /// `mail::filter`). JT_IDS is a comma list of `emails.id`.
+    ///   JT_DB_DIR=... JT_IDS=30,20 cargo test --lib tests::recover_ignored -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn recover_ignored() {
+        use crate::*;
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let ids: Vec<i64> = std::env::var("JT_IDS").expect("JT_IDS").split(',').map(|s| s.trim().parse().unwrap()).collect();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).unwrap();
+        let config = dirs_config();
+        let creds = gmail::credentials::load(&gmail::credentials::path_in(&config)).unwrap();
+        let gmail_state = gmail::GmailState::new(Box::new(gmail::store::KeyringStore));
+        for id in &ids {
+            let gmail_id: String =
+                tauri::async_runtime::block_on(sqlx::query_scalar("SELECT gmail_id FROM emails WHERE id = ?").bind(id).fetch_one(&pool)).unwrap();
+            // Already pending or further along is a no-op, so this is safe to re-run.
+            mail::restore(&gmail_state, &pool, &creds, &gmail_id).unwrap();
+        }
+        let make_client = |key: String| -> Result<Box<dyn extract::gemini::LlmClient>, extract::gemini::CallError> {
+            Ok(Box::new(extract::gemini::GeminiHttp::new(key)?))
+        };
+        extract::run(&extract::ExtractState::default(), &pool, &gmail::store::KeyringStore, &make_client, &std::thread::sleep).unwrap();
+        if routing::is_live(&pool) {
+            let picker = gemini_picker(&pool);
+            routing::run(&routing::RoutingState::default(), &pool, false, picker.as_ref().map(|p| p as &dyn routing::picker::Picker)).unwrap();
+        }
+        for id in &ids {
+            type Row = (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>);
+            let row: Row = tauri::async_runtime::block_on(
+                sqlx::query_as(
+                    "SELECT e.status, e.filter_reason, x.event_type, x.company, x.req_id, m.application_id, m.reasons
+                     FROM emails e
+                     LEFT JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
+                     LEFT JOIN email_matches m ON m.email_id = e.id
+                     WHERE e.id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool),
+            )
+            .unwrap();
+            println!("{id}\t{row:?}");
+        }
+    }
+
+    /// `~/.config` (what Tauri's `config_dir()` gives on Linux).
+    fn dirs_config() -> std::path::PathBuf {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".config"))
     }
 }

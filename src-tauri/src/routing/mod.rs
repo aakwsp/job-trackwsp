@@ -54,6 +54,9 @@ pub const AUTO_THRESHOLD: f64 = 0.80;
 /// by Gemini). Lower because nothing in PIPELINE changes: mostly ATS
 /// confirmations, which can't earn domain evidence.
 pub const ATTACH_THRESHOLD: f64 = 0.60;
+/// Gemini's event-type confidence at which the type counts as "clear" for
+/// the only-open-application rule.
+pub const TYPE_CLEAR: f64 = 0.8;
 /// A role match counts as "clear" (picks one of several applications at a
 /// company) at this similarity, if it also leads the runner-up by `ROLE_MARGIN`.
 const ROLE_CLEAR: f64 = 0.6;
@@ -104,6 +107,9 @@ pub struct EmailIn {
     pub event_type: String,
     pub event_date: Option<String>,
     pub llm_confidence: f64,
+    /// Gemini's confidence in the event type alone (field_confidence), for
+    /// the only-open-application rule.
+    pub type_confidence: f64,
     /// The user undid / edited / rejected an earlier decision: checking only.
     pub user_touched: bool,
     /// `emails.status` (the Gemini picker only sends extracted / checking).
@@ -233,6 +239,16 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
             by_llm = true;
         }
     }
+    // Only one of them is still open, and this is an assessment or
+    // interview (which can only be about an open application): that one.
+    // Not for a rejection: it could be for the closed application.
+    let type_clear = e.type_confidence >= TYPE_CLEAR;
+    if candidates.len() > 1 && type_clear && matches!(e.event_type.as_str(), "assessment" | "interview") {
+        let open: Vec<&AppSnap> = candidates.iter().copied().filter(|a| stage_index(&a.status).is_some()).collect();
+        if open.len() == 1 {
+            candidates = open;
+        }
+    }
 
     let candidate_ids: Vec<i64> = candidates.iter().map(|a| a.id).collect();
     let matched = (candidates.len() == 1).then(|| candidates[0]);
@@ -312,6 +328,24 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         None
     };
 
+    // The only-open-application rule (applies after the evidence score):
+    // the company is named, it has exactly one open application, and this
+    // is a clear stage change (assessment / interview / rejection). That's
+    // enough to apply it automatically even without role or req id.
+    let only_open = matched.is_some_and(|a| {
+        let named_company = named.as_deref() == Some(a.company_key.as_str()) || from_domain.as_deref() == Some(a.company_key.as_str());
+        let open_here = apps.iter().filter(|o| o.company_key == a.company_key && stage_index(&o.status).is_some()).count();
+        named_company
+            && type_clear
+            && stage_index(&a.status).is_some()
+            && open_here == 1
+            && matches!(e.event_type.as_str(), "assessment" | "interview" | "rejection")
+            && matches!(action, Action::WriteEvent(_))
+    });
+    if only_open {
+        reasons.push(format!("only open application at {}", matched.map(|a| a.company_key.as_str()).unwrap_or("")));
+    }
+
     // 5. Route.
     let note = if e.user_touched {
         Some("you changed this one; not automatic".into())
@@ -327,7 +361,7 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         Some(n)
     } else if e.event_type == "offer" {
         Some("offers are always checked".into())
-    } else if score < threshold(&action, by_llm) {
+    } else if score < threshold(&action, by_llm) && !only_open {
         Some(format!("score {score:.2} below {:.2}", threshold(&action, by_llm)))
     } else {
         None
@@ -515,11 +549,12 @@ fn load_emails(pool: &SqlitePool, only: Option<i64>) -> Result<Vec<EmailIn>, sql
         Option<i64>,
         String,
         Option<String>,
+        Option<String>,
     );
     let rows: Vec<Row> = block_on(
         sqlx::query_as(
             "SELECT e.id, x.id, e.received_at, e.subject, e.from_addr, x.company, x.role, x.req_id,
-                    x.event_type, x.occurred_at, x.confidence, m.user_touched, e.status, e.body_text
+                    x.event_type, x.occurred_at, x.confidence, m.user_touched, e.status, e.body_text, x.field_confidence
              FROM emails e
              JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
              LEFT JOIN email_matches m ON m.email_id = e.id
@@ -548,6 +583,13 @@ fn load_emails(pool: &SqlitePool, only: Option<i64>) -> Result<Vec<EmailIn>, sql
             status: r.12,
             body: r.13,
             llm_pick: None,
+            // The event-type field's own confidence, else the overall one.
+            type_confidence: r
+                .14
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok())
+                .and_then(|v| v["event_type"].as_f64())
+                .unwrap_or(r.10.unwrap_or(0.0)),
         })
         .collect())
 }
@@ -704,49 +746,69 @@ fn llm_pick(pool: &SqlitePool, p: &dyn picker::Picker, e: &EmailIn, apps: &[AppS
 fn persist(pool: &SqlitePool, e: &EmailIn, d: &Decision, status: &str) -> Result<Option<i64>, crate::jobs::JobsError> {
     block_on(async {
         let mut tx = pool.begin().await?;
-        let applying = status != "checking";
-        let (event_id, wrote) = match (&d.action, d.application_id, applying) {
-            (Action::WriteEvent(kind), Some(app), true) => {
-                let at = if e.received_at.is_empty() { now_iso() } else { e.received_at.clone() };
-                (Some(crate::applications::write_email_event(&mut tx, app, kind, &at, e.email_id).await?), true)
-            }
-            (Action::AttachEvent(id), _, true) => (Some(*id), false),
-            _ => (None, false),
-        };
-        sqlx::query(
-            "INSERT INTO email_matches (email_id, extraction_id, application_id, candidate_ids, suggested_job_id,
-                                        score, reasons, action, event_id, wrote_event, note, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-             ON CONFLICT (email_id) DO UPDATE SET
-               extraction_id = excluded.extraction_id, application_id = excluded.application_id,
-               candidate_ids = excluded.candidate_ids, suggested_job_id = excluded.suggested_job_id,
-               score = excluded.score, reasons = excluded.reasons, action = excluded.action,
-               event_id = excluded.event_id, wrote_event = excluded.wrote_event, note = excluded.note,
-               updated_at = excluded.updated_at",
-        )
-        .bind(e.email_id)
-        .bind(d.extraction_id)
-        .bind(d.application_id)
-        .bind(serde_json::to_string(&d.candidates).expect("serializes"))
-        .bind(d.suggested_job_id)
-        .bind(d.score)
-        .bind(serde_json::to_string(&d.reasons).expect("serializes"))
-        .bind(d.action.label())
-        .bind(event_id)
-        .bind(wrote)
-        .bind(&d.note)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query("UPDATE emails SET status = ? WHERE id = ?").bind(status).bind(e.email_id).execute(&mut *tx).await?;
-        sqlx::query("UPDATE extractions SET matched_application_id = ?, state = ? WHERE id = ?")
-            .bind(d.application_id)
-            .bind(if applying { "confirmed" } else { "pending" })
-            .bind(d.extraction_id)
-            .execute(&mut *tx)
-            .await?;
+        let wrote = persist_in(&mut tx, e, d, status).await?;
         tx.commit().await?;
-        Ok(if wrote { event_id } else { None })
+        Ok(wrote)
     })
+}
+
+/// [`persist`] inside a caller's transaction ([`new_job`] creates the
+/// posting and application in the same one).
+async fn persist_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    e: &EmailIn,
+    d: &Decision,
+    status: &str,
+) -> Result<Option<i64>, crate::jobs::JobsError> {
+    let applying = status != "checking";
+    let (event_id, wrote) = match (&d.action, d.application_id, applying) {
+        (Action::WriteEvent(kind), Some(app), true) => {
+            let at = if e.received_at.is_empty() { now_iso() } else { e.received_at.clone() };
+            (Some(crate::applications::write_email_event(tx, app, kind, &at, e.email_id).await?), true)
+        }
+        (Action::AttachEvent(id), _, true) => (Some(*id), false),
+        _ => (None, false),
+    };
+    // Older proof of applying moves the applied date back to it.
+    let redated_from = match (&d.action, d.application_id, event_id, applying) {
+        (Action::AttachEvent(_), Some(app), Some(ev), true) if e.event_type == "applied" && !e.received_at.is_empty() => {
+            crate::applications::redate_applied(tx, app, ev, &e.received_at).await?
+        }
+        _ => None,
+    };
+    sqlx::query(
+        "INSERT INTO email_matches (email_id, extraction_id, application_id, candidate_ids, suggested_job_id,
+                                    score, reasons, action, event_id, wrote_event, note, redated_from, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+         ON CONFLICT (email_id) DO UPDATE SET
+           extraction_id = excluded.extraction_id, application_id = excluded.application_id,
+           candidate_ids = excluded.candidate_ids, suggested_job_id = excluded.suggested_job_id,
+           score = excluded.score, reasons = excluded.reasons, action = excluded.action,
+           event_id = excluded.event_id, wrote_event = excluded.wrote_event, note = excluded.note,
+           redated_from = excluded.redated_from, updated_at = excluded.updated_at",
+    )
+    .bind(e.email_id)
+    .bind(d.extraction_id)
+    .bind(d.application_id)
+    .bind(serde_json::to_string(&d.candidates).expect("serializes"))
+    .bind(d.suggested_job_id)
+    .bind(d.score)
+    .bind(serde_json::to_string(&d.reasons).expect("serializes"))
+    .bind(d.action.label())
+    .bind(event_id)
+    .bind(wrote)
+    .bind(&d.note)
+    .bind(redated_from)
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query("UPDATE emails SET status = ? WHERE id = ?").bind(status).bind(e.email_id).execute(&mut **tx).await?;
+    sqlx::query("UPDATE extractions SET matched_application_id = ?, state = ? WHERE id = ?")
+        .bind(d.application_id)
+        .bind(if applying { "confirmed" } else { "pending" })
+        .bind(d.extraction_id)
+        .execute(&mut **tx)
+        .await?;
+    Ok(if wrote { event_id } else { None })
 }
 
 fn now_iso() -> String {
@@ -790,7 +852,16 @@ pub fn confirm(pool: &SqlitePool, email_id: i64, application_id: Option<i64>, cr
             block_on(sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(job).fetch_optional(pool))
                 .map_err(|e| e.to_string())?
         }
-        (None, None) => None,
+        // No application given: the one already matched (by routing, or by
+        // the user with [ change match ]). Re-matching from scratch here
+        // would throw a re-matched email back into ambiguity.
+        (None, None) => block_on(
+            sqlx::query_scalar::<_, Option<i64>>("SELECT application_id FROM email_matches WHERE email_id = ?")
+                .bind(email_id)
+                .fetch_optional(pool),
+        )
+        .map_err(|e| e.to_string())?
+        .flatten(),
     };
     let e = one_email(pool, email_id)?;
     let apps = load_apps(pool).map_err(|e| e.to_string())?;
@@ -819,6 +890,25 @@ pub fn reject(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+/// Takes back a reject: the email goes back to checking (and stays out of
+/// auto). For the bottom line's [ undo ] after rejecting in INBOX.
+pub fn unreject(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
+    let status = email_status(pool, email_id)?;
+    if status != "rejected" {
+        return Err(format!("email is {status}; nothing to un-reject"));
+    }
+    block_on(async {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE emails SET status = 'checking' WHERE id = ?").bind(email_id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE extractions SET state = 'pending' WHERE id = (SELECT MAX(id) FROM extractions WHERE email_id = ?)")
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await
+    })
+    .map_err(|e| e.to_string())
+}
+
 /// Undo an auto (or a confirm): removes the event it wrote, in one
 /// transaction with the bookkeeping, and puts the email in checking, where
 /// it stays (never auto-routed again).
@@ -828,6 +918,7 @@ pub fn undo(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
         return Err(format!("email is {status}; nothing to undo"));
     }
     undo_event(pool, email_id)?;
+    remove_created_job(pool, email_id)?;
     block_on(async {
         let mut tx = pool.begin().await?;
         sqlx::query("UPDATE emails SET status = 'checking' WHERE id = ?").bind(email_id).execute(&mut *tx).await?;
@@ -840,25 +931,214 @@ pub fn undo(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Removes the event this email wrote, if it wrote one.
+/// Removes the event this email wrote, if it wrote one, or puts back the
+/// applied date it moved.
 fn undo_event(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
-    let row: Option<(Option<i64>, Option<i64>, i64)> = block_on(
-        sqlx::query_as("SELECT application_id, event_id, wrote_event FROM email_matches WHERE email_id = ?")
+    type Row = (Option<i64>, Option<i64>, i64, Option<String>);
+    let row: Option<Row> = block_on(
+        sqlx::query_as("SELECT application_id, event_id, wrote_event, redated_from FROM email_matches WHERE email_id = ?")
             .bind(email_id)
             .fetch_optional(pool),
     )
     .map_err(|e| e.to_string())?;
-    let Some((Some(app), Some(event), 1)) = row else { return Ok(()) };
+    let Some((Some(app), Some(event), wrote, redated_from)) = row else { return Ok(()) };
+    if wrote != 1 && redated_from.is_none() {
+        return Ok(());
+    }
     block_on(async {
         let mut tx = pool.begin().await.map_err(crate::jobs::JobsError::from)?;
-        crate::applications::remove_event(&mut tx, app, event).await?;
-        sqlx::query("UPDATE email_matches SET event_id = NULL, wrote_event = 0 WHERE email_id = ?")
+        if wrote == 1 {
+            crate::applications::remove_event(&mut tx, app, event).await?;
+        } else if let Some(at) = &redated_from {
+            crate::applications::restore_applied(&mut tx, app, event, at).await?;
+        }
+        sqlx::query("UPDATE email_matches SET event_id = NULL, wrote_event = 0, redated_from = NULL WHERE email_id = ?")
             .bind(email_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await.map_err(crate::jobs::JobsError::from)
     })
     .map_err(|e: crate::jobs::JobsError| e.to_string())
+}
+
+/// One applied date moved back by [`redate_existing`].
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Debug, Serialize)]
+pub struct Redated {
+    pub email_id: i64,
+    pub application_id: i64,
+    pub from: String,
+    pub to: String,
+}
+
+/// The re-date rule for emails applied before it existed: every auto or
+/// confirmed "applied" email attached to a later applied event moves that
+/// event back to the email's date (oldest email first, so the earliest
+/// proof wins). Applications in `skip` are left alone.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn redate_existing(pool: &SqlitePool, skip: &[i64]) -> Result<Vec<Redated>, String> {
+    let rows: Vec<(i64, i64, i64, String)> = block_on(
+        sqlx::query_as(
+            "SELECT m.email_id, m.application_id, m.event_id, e.received_at
+             FROM email_matches m
+             JOIN emails e ON e.id = m.email_id
+             JOIN extractions x ON x.id = m.extraction_id
+             WHERE m.action = 'attach_event' AND m.wrote_event = 0 AND m.redated_from IS NULL
+               AND m.application_id IS NOT NULL AND m.event_id IS NOT NULL
+               AND x.event_type = 'applied' AND e.status IN ('auto', 'confirmed') AND e.received_at IS NOT NULL
+             ORDER BY e.received_at, e.id",
+        )
+        .fetch_all(pool),
+    )
+    .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (email_id, app, event, at) in rows.into_iter().filter(|r| !skip.contains(&r.1)) {
+        let moved = block_on(async {
+            let mut tx = pool.begin().await.map_err(crate::jobs::JobsError::from)?;
+            let old = crate::applications::redate_applied(&mut tx, app, event, &at).await?;
+            if let Some(old) = &old {
+                sqlx::query("UPDATE email_matches SET redated_from = ? WHERE email_id = ?").bind(old).bind(email_id).execute(&mut *tx).await?;
+            }
+            tx.commit().await.map_err(crate::jobs::JobsError::from)?;
+            Ok::<_, crate::jobs::JobsError>(old)
+        })
+        .map_err(|e| e.to_string())?;
+        if let Some(from) = moved {
+            out.push(Redated { email_id, application_id: app, from, to: at });
+        }
+    }
+    Ok(out)
+}
+
+/// The [ + new job ] form in INBOX: a posting nothing in the sheet has.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct NewJob {
+    pub company: String,
+    pub title: String,
+    pub city: Option<String>,
+    pub req_id: Option<String>,
+    pub url: Option<String>,
+}
+
+/// [ + new job ]: when no application fits, creates a manual posting
+/// (`source = 'manual'`, never marked removed by the sync), an application
+/// on it dated from the email, and applies the email to it, as a confirm.
+/// One transaction. Undoing the email removes the posting and application
+/// again (`email_matches.created_job_id`). Returns the application id.
+pub fn new_job(pool: &SqlitePool, email_id: i64, job: NewJob) -> Result<i64, String> {
+    use crate::sync::matching;
+    let status = email_status(pool, email_id)?;
+    if !matches!(status.as_str(), "checking" | "extracted") {
+        return Err(format!("email is {status}; undo it first"));
+    }
+    let clean = |s: &Option<String>| s.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let (company, title) = (job.company.trim(), job.title.trim());
+    if company.is_empty() || title.is_empty() {
+        return Err("company and role are required".into());
+    }
+    let (city, req_id, url) = (clean(&job.city), clean(&job.req_id), clean(&job.url));
+    if let Some(u) = &url {
+        crate::jobs::check_url(u).map_err(|e| e.to_string())?;
+    }
+    let key = matching::job_key(company, title, city.as_deref().unwrap_or(""), req_id.as_deref().unwrap_or(""));
+    let trip = matching::triple(company, title, city.as_deref().unwrap_or(""));
+    let url_norm = url.as_deref().map(matching::norm_url).unwrap_or_default();
+    // The same three lookups as the sync: an existing posting should be
+    // picked from the list, not duplicated.
+    if let Some((id, _)) = block_on(crate::sync::find_existing(pool, &key, &trip, &url_norm)).map_err(|e| e.to_string())? {
+        let t: String = block_on(sqlx::query_scalar("SELECT title FROM jobs WHERE id = ?").bind(id).fetch_one(pool)).map_err(|e| e.to_string())?;
+        return Err(format!("that posting already exists ({}): search for it under // other application", t.to_lowercase()));
+    }
+    let e = one_email(pool, email_id)?;
+    let at = if e.received_at.is_empty() { now_iso() } else { e.received_at.clone() };
+    block_on(async {
+        let mut tx = pool.begin().await?;
+        let job_id: i64 = sqlx::query_scalar(
+            "INSERT INTO jobs (job_key, company, title, city, req_id, url, url_norm, triple, source, first_seen)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'manual', ?) RETURNING id",
+        )
+        .bind(&key)
+        .bind(company)
+        .bind(title)
+        .bind(&city)
+        .bind(&req_id)
+        .bind(&url)
+        .bind(Some(&url_norm).filter(|u| !u.is_empty()))
+        .bind(&trip)
+        .bind(&at[..10.min(at.len())])
+        .fetch_one(&mut *tx)
+        .await?;
+        let app_id: i64 = sqlx::query_scalar("INSERT INTO applications (job_id, status, applied_at) VALUES (?, 'applied', ?) RETURNING id")
+            .bind(job_id)
+            .bind(&at)
+            .fetch_one(&mut *tx)
+            .await?;
+        // The applied event comes from this email, so it's the email's
+        // (one diamond on the timeline, no "applied by hand" square).
+        let applied: i64 = sqlx::query_scalar(
+            "INSERT INTO application_events (application_id, type, occurred_at, origin, email_id)
+             VALUES (?, 'applied', ?, 'email', ?) RETURNING id",
+        )
+        .bind(app_id)
+        .bind(&at)
+        .bind(email_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let snap = AppSnap {
+            id: app_id,
+            company: company.to_string(),
+            company_key: company_key(company),
+            title: title.to_string(),
+            req_key: req_id.as_deref().and_then(req_key),
+            city: city.clone(),
+            status: "applied".into(),
+            events: vec![(applied, "applied".into())],
+        };
+        let d = decide(&e, std::slice::from_ref(&snap), &[], Some(app_id));
+        persist_in(&mut tx, &e, &d, "confirmed").await?;
+        sqlx::query("UPDATE email_matches SET created_job_id = ?, user_touched = 1 WHERE email_id = ?")
+            .bind(job_id)
+            .bind(email_id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok::<_, crate::jobs::JobsError>(app_id)
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// Undo of [`new_job`]: removes the posting and application it made, unless
+/// other mail has been matched to that application since (then it stays,
+/// and only this email is undone).
+fn remove_created_job(pool: &SqlitePool, email_id: i64) -> Result<(), String> {
+    let job: Option<i64> =
+        block_on(sqlx::query_scalar("SELECT created_job_id FROM email_matches WHERE email_id = ?").bind(email_id).fetch_optional(pool))
+            .map_err(|e| e.to_string())?
+            .flatten();
+    let Some(job) = job else { return Ok(()) };
+    block_on(async {
+        let mut tx = pool.begin().await?;
+        let others: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM email_matches m JOIN applications a ON a.id = m.application_id
+             WHERE a.job_id = ? AND m.email_id <> ?",
+        )
+        .bind(job)
+        .bind(email_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if others == 0 {
+            // Events go with the application (ON DELETE CASCADE).
+            sqlx::query("DELETE FROM applications WHERE job_id = ?").bind(job).execute(&mut *tx).await?;
+            sqlx::query("DELETE FROM jobs WHERE id = ? AND source = 'manual'").bind(job).execute(&mut *tx).await?;
+            sqlx::query("UPDATE email_matches SET application_id = NULL, event_id = NULL WHERE email_id = ?")
+                .bind(email_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("UPDATE email_matches SET created_job_id = NULL WHERE email_id = ?").bind(email_id).execute(&mut *tx).await?;
+        tx.commit().await
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// Fields the user can correct before confirming. None leaves a field as is.
@@ -931,6 +1211,7 @@ mod tests {
             event_type: event.into(),
             event_date: Some("2026-09-20".into()),
             llm_confidence: 0.97,
+            type_confidence: 0.95,
             user_touched: false,
             status: "extracted".into(),
             body: None,
@@ -1040,6 +1321,7 @@ mod tests {
         // interview email so it would write an event).
         let one = vec![app(15, "Atlassian", "Software Engineer Intern, 2027 Canada", None, "applied", &[(150, "applied")])];
         let mut e = email(2, "interview", Some("Atlassian"), Some("Software Engineer Intern, 2027 Canada"), None, "a@talent.icims.com");
+        e.type_confidence = 0.5; // keep the only-open-application rule out of it
         let before = decide(&e, &one, &[], None);
         e.body = Some("Thank you again for your interest in the Software Engineer Intern, 2027 Canada position.".into());
         let after = decide(&e, &one, &[], None);
@@ -1198,9 +1480,50 @@ mod tests {
         let d = decide(&e, &apps, &[], None);
         assert!(d.score >= ATTACH_THRESHOLD && d.score < AUTO_THRESHOLD, "{}", d.score);
         assert_eq!((d.action.clone(), d.route), (Action::AttachEvent(40), Route::Auto));
-        // The same evidence for a stage change (interview) stays checking.
-        let d = decide(&email(2, "interview", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com"), &apps, &[], None);
+        // The same evidence for a stage change (interview) stays checking
+        // (with an unclear type, so the only-open-application rule doesn't
+        // apply; that rule has its own test).
+        let mut interview = email(2, "interview", Some("KPMG"), Some("Software Developer Intern Co-op"), None, "kpmg@talent.icims.com");
+        interview.type_confidence = 0.5;
+        let d = decide(&interview, &apps, &[], None);
         assert_eq!((d.action, d.route), (Action::WriteEvent("interview".into()), Route::Checking));
+    }
+
+    #[test]
+    fn the_only_open_application_takes_clear_stage_changes() {
+        // KPMG-like: ATS sender, no role or req id, one open application.
+        let one = vec![app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")])];
+        let e = email(1, "interview", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        let d = decide(&e, &one, &[], None);
+        assert!(d.score < AUTO_THRESHOLD, "{}", d.score);
+        assert_eq!((d.action.clone(), d.route), (Action::WriteEvent("interview".into()), Route::Auto));
+        assert!(d.reasons.iter().any(|r| r == "only open application at kpmg"));
+
+        // The type isn't clear: checking.
+        let mut vague = email(2, "interview", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        vague.type_confidence = 0.5;
+        assert_eq!(decide(&vague, &one, &[], None).route, Route::Checking);
+
+        // Two open applications at the company: checking.
+        let two = vec![
+            app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")]),
+            app(5, "KPMG", "Data Analyst Intern", None, "applied", &[(50, "applied")]),
+        ];
+        assert_eq!(decide(&e, &two, &[], None).route, Route::Checking);
+
+        // One open + one closed: an interview goes to the open one...
+        let mixed = vec![
+            app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")]),
+            app(6, "KPMG", "Audit Intern", None, "rejected", &[(60, "applied"), (61, "rejected")]),
+        ];
+        let d = decide(&e, &mixed, &[], None);
+        assert_eq!((d.application_id, d.route), (Some(4), Route::Auto));
+        // ...but a rejection could be for either: checking.
+        let rej = email(3, "rejection", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        assert_eq!(decide(&rej, &mixed, &[], None).route, Route::Checking);
+        // Offers still always wait.
+        let offer = email(4, "offer", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        assert_eq!(decide(&offer, &one, &[], None).route, Route::Checking);
     }
 
     #[test]
@@ -1276,6 +1599,180 @@ mod tests {
         )
         .unwrap();
         (status, events)
+    }
+
+    fn live(pool: &SqlitePool) {
+        block_on(sqlx::query("INSERT INTO settings (key, value) VALUES ('routing_live', '1')").execute(pool)).unwrap();
+    }
+
+    fn applied_dates(pool: &SqlitePool, app: i64) -> (String, String) {
+        block_on(sqlx::query_as(
+            "SELECT a.applied_at, e.occurred_at FROM applications a JOIN application_events e ON e.application_id = a.id AND e.type = 'applied' WHERE a.id = ?",
+        )
+        .bind(app)
+        .fetch_one(pool))
+        .unwrap()
+    }
+
+    #[test]
+    fn older_applied_email_moves_the_applied_date_back_and_undo_restores_it() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        // Marked applied by hand today; the confirmation email is from 09-17.
+        let app = seed(&pool, &[("applied", "2026-09-17T14:00:00Z")]);
+        let clicked = applied_dates(&pool, app).0;
+        assert!(clicked.as_str() > "2026-10-01");
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        live(&pool);
+        run(&RoutingState::default(), &pool, false, None).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "auto");
+        assert_eq!(applied_dates(&pool, app), ("2026-09-17T14:00:00Z".into(), "2026-09-17T14:00:00Z".into()));
+        // Undo puts the clicked date back.
+        undo(&pool, email).unwrap();
+        assert_eq!(applied_dates(&pool, app), (clicked.clone(), clicked.clone()));
+        // A newer applied email never moves it later.
+        confirm(&pool, email, Some(app), None).unwrap();
+        assert_eq!(applied_dates(&pool, app).1, "2026-09-17T14:00:00Z");
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn new_job_creates_posting_and_application_and_undo_removes_them() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        seed(&pool, &[("interview", "2026-09-20T15:00:00Z")]);
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        block_on(sqlx::query("UPDATE emails SET status = 'checking' WHERE id = ?").bind(email).execute(&pool)).unwrap();
+        let job = || NewJob {
+            company: "Zeta".into(),
+            title: "Platform Intern".into(),
+            city: Some("Toronto".into()),
+            req_id: Some(" ".into()),
+            url: None,
+        };
+        // An existing posting is refused (pick it instead).
+        block_on(
+            sqlx::query("INSERT INTO jobs (job_key, company, title, triple) VALUES (?, 'Acme', 'Data Intern', ?)")
+                .bind(crate::sync::matching::job_key("Acme", "Data Intern", "", "R-7"))
+                .bind(crate::sync::matching::triple("Acme", "Data Intern", ""))
+                .execute(&pool),
+        )
+        .unwrap();
+        let dup = NewJob { company: "ACME".into(), title: "data intern".into(), city: None, req_id: Some("R-7".into()), url: None };
+        assert!(new_job(&pool, email, dup).unwrap_err().contains("already exists"));
+
+        let app = new_job(&pool, email, job()).unwrap();
+        let (source, first_seen, req): (String, String, Option<String>) =
+            block_on(sqlx::query_as("SELECT source, first_seen, req_id FROM jobs j JOIN applications a ON a.job_id = j.id WHERE a.id = ?").bind(app).fetch_one(&pool))
+                .unwrap();
+        assert_eq!((source.as_str(), first_seen.as_str(), req), ("manual", "2026-09-20", None));
+        // Applied on the email's date, then the interview the email is.
+        assert_eq!(app_state(&pool, app), ("interview".into(), vec!["applied".into(), "interview".into()]));
+        assert_eq!(applied_dates(&pool, app).0, "2026-09-20T15:00:00Z");
+        assert_eq!(email_status(&pool, email).unwrap(), "confirmed");
+        // Timeline: no "applied by hand" square, one diamond.
+        let t = crate::inbox::timeline(&pool, app).unwrap();
+        let kinds: Vec<&str> = t.iter().map(|n| n.kind.as_str()).collect();
+        assert_eq!(kinds, ["event", "email"]); // first seen, then the email
+
+        undo(&pool, email).unwrap();
+        let left: (i64, i64) = block_on(sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM jobs WHERE source = 'manual'), (SELECT COUNT(*) FROM applications WHERE id = ?)",
+        )
+        .bind(app)
+        .fetch_one(&pool))
+        .unwrap();
+        assert_eq!(left, (0, 0));
+        assert_eq!(email_status(&pool, email).unwrap(), "checking");
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn redate_existing_fixes_attachments_made_before_the_rule() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let app = seed(&pool, &[("applied", "2026-09-17T14:00:00Z"), ("applied", "2026-09-16T09:00:00Z")]);
+        let clicked = applied_dates(&pool, app).0;
+        live(&pool);
+        run(&RoutingState::default(), &pool, false, None).unwrap();
+        // Pretend both attached before the rule: put the clicked date back.
+        block_on(async {
+            sqlx::query("UPDATE email_matches SET redated_from = NULL").execute(&pool).await.unwrap();
+            sqlx::query("UPDATE application_events SET occurred_at = ?").bind(&clicked).execute(&pool).await.unwrap();
+            sqlx::query("UPDATE applications SET applied_at = ?").bind(&clicked).execute(&pool).await.unwrap();
+        });
+        assert!(redate_existing(&pool, &[app]).unwrap().is_empty()); // skipped
+        let moved = redate_existing(&pool, &[]).unwrap();
+        assert_eq!(moved.len(), 1); // the oldest email wins; the other is later
+        assert_eq!(applied_dates(&pool, app).0, "2026-09-16T09:00:00Z");
+        assert!(redate_existing(&pool, &[]).unwrap().is_empty()); // idempotent
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The re-date rule for existing attachments, on the database in
+    /// JT_DB_DIR, skipping the applications in JT_SKIP (comma-separated):
+    ///   JT_DB_DIR=... JT_SKIP=2 cargo test --lib routing::tests::redate_existing_real -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn redate_existing_real() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let skip: Vec<i64> = std::env::var("JT_SKIP").unwrap_or_default().split(',').filter_map(|s| s.trim().parse().ok()).collect();
+        println!("{}", serde_json::to_string(&redate_existing(&pool, &skip).unwrap()).unwrap());
+    }
+
+    /// One-off (JT-18): Google's four applications as the Careers page
+    /// shows them, and its four "thanks for applying" emails mapped by date.
+    ///   JT_DB_DIR=... cargo test --lib routing::tests::fix_google -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn fix_google() {
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let app_of = |job: i64| -> i64 {
+            block_on(sqlx::query_scalar("SELECT id FROM applications WHERE job_id = ?").bind(job).fetch_one(&pool)).unwrap()
+        };
+        // Software Developer Intern, MS (Montréal, job 149) was marked
+        // applied by mistake: free its email, then unmark it.
+        // Safe to re-run: each step skips what's already done.
+        if email_status(&pool, 116).unwrap() == "confirmed" {
+            undo(&pool, 116).unwrap();
+        }
+        block_on(crate::jobs::set_applied(&pool, 149, false)).unwrap();
+        // The missing ones: two on their postings, one with no posting.
+        block_on(crate::jobs::set_applied(&pool, 229, true)).expect("229"); // Security Consultant Intern, Toronto
+        block_on(crate::jobs::set_applied(&pool, 230, true)).expect("230"); // Student Researcher, Waterloo
+        let title = "Software Developer Intern, BS, Summer 2027";
+        let existing: Option<i64> =
+            block_on(sqlx::query_scalar("SELECT id FROM applications WHERE job_id IS NULL AND company = 'Google' AND title = ?").bind(title).fetch_optional(&pool))
+                .unwrap();
+        let swe = match existing {
+            Some(id) => id,
+            None => block_on(crate::applications::add(&pool, "Google", title, None)).unwrap().id,
+        };
+        for (email, app) in [(116, swe), (27, app_of(223)), (10, app_of(229)), (9, app_of(230))] {
+            // The running app may have routed it there already.
+            let on: Option<i64> =
+                block_on(sqlx::query_scalar("SELECT application_id FROM email_matches WHERE email_id = ?").bind(email).fetch_one(&pool)).unwrap();
+            if matches!(email_status(&pool, email).unwrap().as_str(), "auto" | "confirmed") && on == Some(app) {
+                continue;
+            }
+            confirm(&pool, email, Some(app), None).unwrap();
+        }
+        type Row = (i64, Option<i64>, String, String, Option<String>);
+        let rows: Vec<Row> = block_on(
+            sqlx::query_as(
+                "SELECT a.id, a.job_id, COALESCE(j.title, a.title), a.status, a.applied_at
+                 FROM applications a LEFT JOIN jobs j ON j.id = a.job_id
+                 WHERE COALESCE(j.company, a.company) = 'Google' ORDER BY a.applied_at",
+            )
+            .fetch_all(&pool),
+        )
+        .unwrap();
+        println!("{rows:?}");
     }
 
     #[test]
@@ -1412,6 +1909,50 @@ mod tests {
             let raw = crate::extract::gemini::LlmClient::generate(&client, &model, picker::SYSTEM, &user, &picker::schema());
             println!("email {id} ({} candidates): {raw:?}", cands.len());
         }
+    }
+
+    /// The bug from the first on-screen check: an ambiguous email, re-matched
+    /// with [ change match ], then confirmed without an application id.
+    #[test]
+    fn confirm_uses_the_stored_match_and_reject_can_be_taken_back() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        block_on(async {
+            for t in ["Backend Intern", "Frontend Intern"] {
+                sqlx::query("INSERT INTO applications (company, title) VALUES ('Acme', ?)").bind(t).execute(&pool).await.unwrap();
+            }
+            for id in sqlx::query_scalar::<_, i64>("SELECT id FROM applications").fetch_all(&pool).await.unwrap() {
+                sqlx::query("INSERT INTO application_events (application_id, type, occurred_at) VALUES (?, 'applied', '2026-09-01T00:00:00Z')")
+                    .bind(id).execute(&pool).await.unwrap();
+            }
+            let e: i64 = sqlx::query_scalar(
+                "INSERT INTO emails (gmail_id, from_addr, subject, received_at, status)
+                 VALUES ('g', 'x@talent.icims.com', 's', '2026-09-02T00:00:00Z', 'checking') RETURNING id",
+            ).fetch_one(&pool).await.unwrap();
+            sqlx::query("INSERT INTO extractions (email_id, company, event_type, confidence) VALUES (?, 'Acme', 'applied', 0.9)")
+                .bind(e).execute(&pool).await.unwrap();
+        });
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        // Ambiguous: confirming with nothing picked fails, as it should.
+        assert!(confirm(&pool, email, None, None).is_err());
+        // [ change match ] → app 2, then [ confirm ] with no id: uses it.
+        edit(&pool, email, Edit { application_id: Some(2), ..Default::default() }).unwrap();
+        confirm(&pool, email, None, None).unwrap();
+        let (status, app): (String, Option<i64>) = block_on(
+            sqlx::query_as("SELECT e.status, m.application_id FROM emails e JOIN email_matches m ON m.email_id = e.id").fetch_one(&pool),
+        )
+        .unwrap();
+        assert_eq!((status.as_str(), app), ("confirmed", Some(2)));
+
+        // Reject, then take it back: checking again.
+        undo(&pool, email).unwrap();
+        reject(&pool, email).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "rejected");
+        unreject(&pool, email).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "checking");
+        assert!(unreject(&pool, email).is_err());
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The dry run on a COPY of the real database. Not run by default:

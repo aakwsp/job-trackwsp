@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type TransitionEvent } from 'react'
-import type { Application, Job, StatusColor } from '../../types'
+import type { Application, Job, StatusColor, TimelineNode } from '../../types'
+import * as api from '../../api'
 import { activeFlags, labelsFor, statusInfo } from '../../lib/jobs'
 import { nextStage, stageColor } from '../../lib/applications'
 import { prefersReducedMotion } from '../../lib/motion'
@@ -31,6 +32,8 @@ type Props = {
   onStep: (app: Application, dir: 1 | -1) => void
   // Rejects with a message if the save failed.
   onSaveNotes: (body: string) => Promise<void>
+  // Emails tab: opens one in INBOX (JT-18).
+  onOpenEmail: (emailId: number) => void
 }
 
 // One record for a posting and/or its application, opened from JOBS (on the
@@ -60,11 +63,27 @@ export default function Record({
   onUndoEvent,
   onStep,
   onSaveNotes,
+  onOpenEmail,
 }: Props) {
   const panelRef = useRef<HTMLElement>(null)
   const [closing, setClosing] = useState(false)
   const [expanded, setExpanded] = useState(false)
   const [tab, setTab] = useState<Tab>(initialTab)
+  // The application's timeline (JT-18: events and emails), oldest first.
+  // Refetched when the application or its events change (a stage moved,
+  // an undo); null until then. `version` is a string so the effect only
+  // re-runs when something it shows actually changed.
+  const [timeline, setTimeline] = useState<TimelineNode[] | null>(null)
+  const appId = app?.id ?? null
+  const version = app ? `${app.id}:${app.events.length}:${app.status}:${app.applied_at}` : null
+  useEffect(() => {
+    if (appId === null) return
+    let stale = false
+    api.appTimeline(appId).then((n) => !stale && setTimeline(n)).catch(() => !stale && setTimeline([]))
+    return () => {
+      stale = true
+    }
+  }, [appId, version])
 
   // The textarea's text lives here, not in App, so typing doesn't touch
   // App's state on every keystroke. `saved` remembers what the DB has, so a
@@ -231,6 +250,8 @@ export default function Record({
     reject: () => app && onReject(app),
     undo,
     goTo: setTab,
+    timeline: app ? timeline : job?.first_seen ? [firstSeen(job.first_seen)] : [],
+    openEmail: onOpenEmail,
     notes: { id: notesId, value: notes, error: notesError, onChange: setNotes, onBlur: saveNotes },
   }
 
@@ -420,4 +441,9 @@ function Section({ tab, m, pad, wide }: { tab: Tab; m: RecordModel; pad: string;
     case 'emails':
       return <EmailsSection {...props} />
   }
+}
+
+// Not applied yet: the timeline is just the posting's first sighting.
+function firstSeen(at: string): TimelineNode {
+  return { kind: 'event', email_id: null, event_type: 'first_seen', status: null, at, read: true }
 }

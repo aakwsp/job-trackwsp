@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import * as api from './api'
+import { listen } from '@tauri-apps/api/event'
 import type { Application, Filters, Job } from './types'
 import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
 import { loadFilters, rowCounts, saveFilters } from './lib/filters'
@@ -17,7 +18,6 @@ import Hero from './components/Hero'
 import AppFooter from './components/AppFooter'
 import Placeholder from './components/Placeholder'
 import {
-  CheckMailButton,
   GeminiKeyInput,
   GeminiKeyRow,
   GmailConnectBlock,
@@ -25,6 +25,8 @@ import {
   MailStatusLine,
 } from './components/GmailConnection'
 import { useMail } from './lib/useMail'
+import { useInbox } from './lib/useInbox'
+import Inbox from './components/inbox/Inbox'
 import { useGmail } from './lib/useGmail'
 import { PAGES, type Page } from './lib/page'
 import RevealProvider from './components/RevealProvider'
@@ -88,9 +90,17 @@ export default function App() {
   const [page, setPage] = useState<Page>('jobs')
   // The job account's Gmail connection, shown on QUEUE (JT-13). Checked
   // each time QUEUE opens.
-  const gmail = useGmail(page === 'queue')
+  const gmail = useGmail(page === 'inbox')
   // The mail poller's status line, only meaningful once connected.
-  const mail = useMail(page === 'queue' && gmail.status.kind === 'connected')
+  const mail = useMail(page === 'inbox' && gmail.status.kind === 'connected')
+  // INBOX's lists and detail (JT-18).
+  const inbox = useInbox(page === 'inbox', (t) => setToast(t))
+  // The INBOX hero's "5 to check · 160 emails" (checking = still needs a
+  // look, including mail Gemini or routing hasn't finished with).
+  const inboxCounts = useMemo(() => {
+    const rows = inbox.rows ?? []
+    return { check: rows.filter((r) => ['checking', 'pending', 'extracted'].includes(r.status)).length, all: rows.length }
+  }, [inbox.rows])
 
   // <main> is the one scrolling element; every view scrolls inside it.
   const mainRef = useRef<HTMLElement>(null)
@@ -114,6 +124,16 @@ export default function App() {
       stale = true
     }
   }, [reloadKey])
+
+  // INBOX actions can change the lists too (a confirm moves a stage,
+  // [ + new job ] adds a posting and an application): reload them quietly.
+  // `listen` resolves to its unsubscribe function, hence the `.then`.
+  useEffect(() => {
+    const off = listen('inbox-changed', () => setReloadKey((k) => k + 1))
+    return () => {
+      off.then((f) => f())
+    }
+  }, [])
 
   const jobs = useMemo(() => (load.kind === 'ready' ? load.jobs : []), [load])
   const apps = useMemo(() => (load.kind === 'ready' ? load.apps : []), [load])
@@ -581,15 +601,17 @@ export default function App() {
               subtitle={
                 page === 'pipeline' && load.kind === 'ready' ? (
                   pipelineHero.subtitle
-                ) : page === 'queue' ? (
+                ) : page === 'inbox' ? (
                   <>
+                    {/* The one-line subtitle, then the gmail / gemini lines. */}
+                    <span className="block">{current.subtitle}</span>
                     {gmail.status.kind === 'connected' && (
-                      <span className="block">
+                      <span className="mt-1 block">
                         <MailStatusLine mail={mail.status} busy={mail.busy} />
                       </span>
                     )}
                     {mail.error && <span className="mt-1 block text-pink">{mail.error}</span>}
-                    <span className={gmail.status.kind === 'connected' ? 'mt-1 block' : undefined}>
+                    <span className="mt-1 block">
                       <GmailStatusLine {...gmailProps} />
                     </span>
                     {gmail.status.kind === 'connected' &&
@@ -613,8 +635,26 @@ export default function App() {
               aside={
                 page === 'pipeline' ? (
                   load.kind === 'ready' && pipelineHero.aside
-                ) : page === 'queue' ? (
-                  gmail.status.kind === 'connected' && <CheckMailButton busy={mail.busy} onCheck={mail.check} />
+                ) : page === 'inbox' ? (
+                  // Counts + [ check mail ], placed and styled like JOBS'
+                  // "328 / 328  [ sync ]".
+                  <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
+                    {inbox.rows && (
+                      <span>
+                        {inboxCounts.check} to check · {inboxCounts.all} {inboxCounts.all === 1 ? 'email' : 'emails'}
+                      </span>
+                    )}
+                    {gmail.status.kind === 'connected' && (
+                      <button
+                        type="button"
+                        onClick={mail.check}
+                        disabled={mail.busy}
+                        className="cursor-pointer hover:text-text disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {mail.busy ? '[ checking… ]' : '[ check mail ]'}
+                      </button>
+                    )}
+                  </div>
                 ) : 
                 page === 'jobs' && (
                   <div className="flex shrink-0 items-baseline gap-4 text-meta text-text-muted">
@@ -730,8 +770,11 @@ export default function App() {
               </>
             ) : (
               <>
-                {page === 'queue' && <GmailConnectBlock {...gmailProps} />}
-                <Placeholder what={current.title} />
+                {page === 'inbox' ? (
+                  <Inbox inbox={inbox} connected={gmail.status.kind === 'connected'} top={<GmailConnectBlock {...gmailProps} />} />
+                ) : (
+                  <Placeholder what={current.title} />
+                )}
               </>
             )}
 
@@ -760,6 +803,11 @@ export default function App() {
           onUndoEvent={(app) => move(api.undoEvent, app)}
           onStep={stepApp}
           onSaveNotes={(body) => saveRecordNotes(recordJob, recordApp, body)}
+          onOpenEmail={(id) => {
+            // Leaves the record and shows that email in INBOX.
+            switchPage('inbox')
+            inbox.open(id)
+          }}
         />
       )}
 

@@ -93,10 +93,110 @@ export type MailStatus = {
   last_checked_at: string | null // full ISO timestamp, UTC; null before the first poll
   last_new: number // messages from that poll that passed the filter
   total: number // every stored email, whatever its status
+  ignored: number // ignored or blocked: never in INBOX's lists
   checking: boolean // a poll is running now
   parsed: number // emails the LLM has read (JT-15)
   waiting: number // pending emails waiting for the LLM
   extracting: boolean // the LLM is working through them now
   extract_error: string | null // why the last LLM run stopped early (bad key, ...)
   needs_key: boolean // no Gemini API key stored yet
+}
+
+// ── INBOX (JT-18). Mirrors src-tauri/src/inbox.rs. ──────────────────────
+
+export type InboxStatus = 'pending' | 'extracted' | 'checking' | 'auto' | 'confirmed' | 'rejected'
+
+export type InboxRow = {
+  id: number
+  status: InboxStatus
+  company: string | null
+  event_type: string | null
+  score: number | null // routing score (JT-16), not Gemini's confidence
+  subject: string | null
+  received_at: string | null
+  read: boolean
+  application_id: number | null
+}
+
+export type IgnoredRow = {
+  id: number
+  gmail_id: string
+  from_addr: string | null
+  subject: string | null
+  received_at: string | null
+  filter_reason: string | null
+}
+
+export type AppRef = { id: number; company: string; title: string; status: string; applied_at: string | null; city: string | null }
+
+// [ + new job ] in INBOX (routing::NewJob).
+export type NewJob = { company: string; title: string; city?: string; req_id?: string; url?: string }
+
+export type InboxDetail = {
+  email: {
+    id: number
+    gmail_id: string
+    thread_id: string | null
+    status: InboxStatus
+    from_addr: string | null
+    subject: string | null
+    received_at: string | null
+    body_text: string | null // plain text only; never rendered as HTML
+    read: boolean
+    extract_error: string | null
+  }
+  extraction: {
+    id: number
+    company: string | null
+    role: string | null
+    req_id: string | null
+    event_type: string
+    occurred_at: string | null
+    confidence: number | null // Gemini's
+    field_confidence: string | null // JSON object
+  } | null
+  match: {
+    application: AppRef | null
+    candidates: AppRef[]
+    suggested_job: { id: number; company: string; title: string } | null
+    score: number
+    reasons: string[]
+    action: string // write_event:<type> | attach_event | attach | none
+    note: string | null
+    wrote_event: boolean
+  } | null
+  applications: AppRef[]
+  timeline: TimelineNode[] // the matched application's timeline, oldest first
+}
+
+// Corrections for routing::edit (JT-16). Omitted = unchanged.
+export type RouteEdit = {
+  company?: string
+  role?: string
+  req_id?: string
+  event_type?: string
+  event_date?: string
+  application_id?: number
+}
+
+// One node of an application's timeline (JT-18): an email (diamond) or an
+// event that isn't one (square: first seen, applied by hand, a manual stage
+// change). Mirrors inbox::TimelineNode.
+export type TimelineNode = {
+  kind: 'email' | 'event'
+  email_id: number | null // emails only
+  event_type: string | null // email: extracted type; event: its type or 'first_seen'
+  status: InboxStatus | null // emails only
+  at: string | null // received / occurred; first_seen is a plain date
+  read: boolean
+}
+
+export type InboxJob = {
+  application_id: number
+  company: string
+  title: string
+  status: string
+  emails: number
+  unread: number
+  latest: string | null
 }

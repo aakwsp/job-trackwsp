@@ -65,6 +65,10 @@ insert a new row.
   is its own column, not a `posting_status` value, because the sync
   overwrites `posting_status` from the sheet. JOBS excludes removed rows by
   default (the "removed" filter row); PIPELINE's record still opens them.
+  `source = 'manual'` marks a posting made in INBOX with [ + new job ]
+  (`routing::new_job`): never marked removed and not counted by the
+  removal guard; if the sheet later has the same posting, the sync merges
+  into it like any other row.
 - `applications` — the user's applications. **Never** written by the sync.
   `job_id` is nullable, since the user can apply to things the scheduler never
   found. `status` is stored and recomputed whenever an event is written.
@@ -74,10 +78,14 @@ insert a new row.
   filtered at once: `status` is `pending` (on to the LLM, JT-15), `ignored`,
   or `blocked`, and `filter_reason` says why either way. Order: the block
   list (the user's part-time job, `ams.queensu.ca` and Dayforce's `notify@`;
-  nothing overrides it), then the allow list's ATS senders, then ignored
-  single addresses (they beat the next rule), then the allow list's
-  applied-company domains (a guess from company names and posting URLs),
-  then the rest of the ignore list. All three lists are constants in `mail/filter.rs` for now (editable in
+  nothing overrides it), then the allow list's ATS senders, then known
+  job-alert senders (sender + subject start), then account/security mail
+  and mail you sent, then application mail (an applied company's domain or
+  any subdomain, a guess from company names and posting URLs; or a subject
+  naming one of your req ids or "application" / "applying" / "interview" /
+  "assessment"), which is never ignored, then newsletter domains.
+  A List-Unsubscribe header alone ignores nothing (JT-18: AMD and
+  Robinhood send application mail with one); Gemini decides. All the lists are constants in `mail/filter.rs` for now (editable in
   JT-33). **Ignored and blocked mail keeps only `gmail_id`, `from_addr`,
   `subject`, `received_at` and `filter_reason`**: body, snippet, recipient,
   thread and labels are never stored (or are cleared by `mail::refilter`,
@@ -124,7 +132,11 @@ insert a new row.
   are cached in `llm_match_hints` per candidate set (not by dry runs).
   Auto needs exactly one match and ≥ 0.80 for anything that writes a stage
   event, or ≥ 0.60 for attach-only actions with a real single candidate (not
-  one resting on a Gemini pick); ambiguous, unmatched, offers, reopening a closed
+  one resting on a Gemini pick). Exception: when the company matches and
+  it's the user's only open application there, a clear (event-type
+  confidence ≥ 0.8) assessment / interview / rejection goes auto below
+  0.80 (reason "only open application at <co>"); several open there →
+  checking. Ambiguous, unmatched, offers, reopening a closed
   application → `checking`. Auto never moves an application backwards, never
   duplicates a stage that's already recorded (it attaches to that event),
   never creates an application (a matching posting is only suggested), and
@@ -133,6 +145,20 @@ insert a new row.
   run and whenever applications change, **only once `settings.routing_live`
   = '1'** (live since 2026-10-15); `routing::run(.., dry = true)` decides and simulates without
   writing. Emails the user undid / edited / rejected are never auto again.
+  An `applied` email that attaches (auto or confirm) to a later `applied`
+  event moves that event and `applications.applied_at` back to the email's
+  date; `email_matches.redated_from` keeps the old date so undo restores
+  it (`routing::redate_existing` fixed the ones attached before the rule).
+  [ + new job ] creates the manual posting, an application on it dated
+  from the email and the email's match in one transaction;
+  `email_matches.created_job_id` lets undo remove the posting and
+  application again (unless other mail has matched it since).
+- Timeline (JT-18, `inbox::timeline`, `components/Timeline.tsx`): one
+  horizontal timeline per application, used in INBOX and the record's
+  summary / application / emails tabs. Diamonds = emails in their stage
+  colour (hollow while checking); squares = events that aren't emails
+  (posting first seen, applied by hand, manual stage changes). An event an
+  email wrote is drawn once, as that email. No other posting noise.
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
   `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the
