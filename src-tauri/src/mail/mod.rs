@@ -200,7 +200,7 @@ fn poll_inner(gmail_state: &GmailState, pool: &SqlitePool, creds: &ClientCredent
     let mut seen = HashSet::new();
     let todo: Vec<&String> = ids.iter().filter(|id| !stored.contains(*id) && seen.insert(*id)).collect();
 
-    let companies = company_domains(pool)?;
+    let applied = applied(pool)?;
     let mut new_pending = 0u32;
     for id in todo {
         let msg = match api::get_message(&http, &token()?, id) {
@@ -212,7 +212,7 @@ fn poll_inner(gmail_state: &GmailState, pool: &SqlitePool, creds: &ClientCredent
         if msg.label_ids.iter().any(|l| l == "DRAFT") {
             continue;
         }
-        if store(pool, &msg, &companies)? == Stored::Pending {
+        if store(pool, &msg, &applied)? == Stored::Pending {
             new_pending += 1;
         }
     }
@@ -239,16 +239,16 @@ enum Stored {
 /// Ignored and blocked mail never has its content stored: only who sent
 /// it, when, the subject and the reason. If it's restored later, it's
 /// fetched from Gmail again (`restore`).
-fn store(pool: &SqlitePool, msg: &mime::Message, companies: &[String]) -> Result<Stored, MailError> {
+fn store(pool: &SqlitePool, msg: &mime::Message, applied: &filter::Applied) -> Result<Stored, MailError> {
     let d = mime::decode(msg);
     let labels = serde_json::to_string(&msg.label_ids).expect("labels serialize");
     let verdict = filter::classify(
         &filter::Input {
             from: d.from.as_deref(),
-            list_unsubscribe: d.list_unsubscribe,
+            subject: d.subject.as_deref(),
             label_ids: &msg.label_ids,
         },
-        companies,
+        applied,
     );
     let keep = matches!(verdict, filter::Verdict::Pending(_));
     // `.then(..)`: Some(value) for pending mail, None (stored as NULL)
@@ -303,9 +303,8 @@ pub struct Refiltered {
 /// after mail arrived still applies to it. Runs on app start (connected or
 /// not) and before every poll.
 ///
-/// - pending rows are re-classified from what's stored (sender, labels).
-///   The List-Unsubscribe header isn't stored, but that rule hasn't
-///   changed for rows that already passed it.
+/// - pending rows are re-classified from what's stored (sender, subject,
+///   labels).
 /// - ignored rows only move to blocked: there's not enough left of them
 ///   to re-check anything else, and restoring is `restore`'s job.
 /// - every ignored or blocked row has its content cleared. Idempotent.
@@ -315,19 +314,21 @@ pub struct Refiltered {
 /// clearing so old copies don't linger there either.
 pub fn refilter(pool: &SqlitePool) -> Result<Refiltered, MailError> {
     let mut out = Refiltered::default();
-    let companies = company_domains(pool)?;
+    let applied = applied(pool)?;
 
-    let pending: Vec<(i64, Option<String>, Option<String>)> =
-        block_on(sqlx::query_as("SELECT id, from_addr, label_ids FROM emails WHERE status = 'pending'").fetch_all(pool))?;
-    for (id, from, labels) in pending {
+    type Row = (i64, Option<String>, Option<String>, Option<String>);
+    let pending: Vec<Row> = block_on(
+        sqlx::query_as("SELECT id, from_addr, subject, label_ids FROM emails WHERE status = 'pending'").fetch_all(pool),
+    )?;
+    for (id, from, subject, labels) in pending {
         let labels: Vec<String> = labels.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
         let verdict = filter::classify(
             &filter::Input {
                 from: from.as_deref(),
-                list_unsubscribe: false,
+                subject: subject.as_deref(),
                 label_ids: &labels,
             },
-            &companies,
+            &applied,
         );
         if !matches!(verdict, filter::Verdict::Pending(_)) {
             set_verdict(pool, id, &verdict)?;
@@ -341,10 +342,10 @@ pub fn refilter(pool: &SqlitePool) -> Result<Refiltered, MailError> {
         let verdict = filter::classify(
             &filter::Input {
                 from: from.as_deref(),
-                list_unsubscribe: false,
+                subject: None,
                 label_ids: &[],
             },
-            &[],
+            &filter::Applied::default(),
         );
         if matches!(verdict, filter::Verdict::Blocked(_)) {
             set_verdict(pool, id, &verdict)?;
@@ -418,10 +419,10 @@ fn apply_restore(pool: &SqlitePool, msg: &mime::Message) -> Result<(), MailError
     let verdict = filter::classify(
         &filter::Input {
             from: d.from.as_deref(),
-            list_unsubscribe: false,
+            subject: d.subject.as_deref(),
             label_ids: &[],
         },
-        &[],
+        &filter::Applied::default(),
     );
     if matches!(verdict, filter::Verdict::Blocked(_)) {
         return Err(MailError::Refused("blocked mail can't be restored".into()));
@@ -457,21 +458,27 @@ fn stored_ids(pool: &SqlitePool, ids: &[String]) -> Result<HashSet<String>, Mail
     Ok(rows.into_iter().collect())
 }
 
-/// Domains of companies the user applied to, for the filter's allow rule:
-/// the posting URL's registrable domain (unless it's an ATS or job board,
-/// which says nothing about the company), and the company name as
-/// `<name>.com`. A heuristic; it only decides whether mail skips the
-/// ignore list, and the LLM still sees everything else.
-fn company_domains(pool: &SqlitePool) -> Result<Vec<String>, MailError> {
-    let rows: Vec<(Option<String>, Option<String>)> = block_on(
+/// What the filter's application-mail rule knows. Domains of companies
+/// the user applied to: the posting URL's registrable domain (unless it's
+/// an ATS or job board, which says nothing about the company), and the
+/// company name as `<name>.com`. A heuristic; it only decides whether
+/// mail skips the ignore list, and the LLM still sees everything else.
+/// Plus the req ids of those postings.
+fn applied(pool: &SqlitePool) -> Result<filter::Applied, MailError> {
+    let rows: Vec<(Option<String>, Option<String>, Option<String>)> = block_on(
         sqlx::query_as(
-            "SELECT COALESCE(j.company, a.company), j.url
+            "SELECT COALESCE(j.company, a.company), j.url, j.req_id
              FROM applications a LEFT JOIN jobs j ON j.id = a.job_id",
         )
         .fetch_all(pool),
     )?;
     let mut out = HashSet::new();
-    for (company, url) in rows {
+    let mut reqs = HashSet::new();
+    for (company, url, req) in rows {
+        // Very short ids would match too much of an unrelated subject.
+        if let Some(r) = req.map(|r| r.trim().to_lowercase()).filter(|r| r.len() >= 4) {
+            reqs.insert(r);
+        }
         if let Some(host) = url.as_deref().and_then(host_of) {
             let reg = filter::registrable(&host);
             if !filter::is_job_board(&reg) {
@@ -485,7 +492,10 @@ fn company_domains(pool: &SqlitePool) -> Result<Vec<String>, MailError> {
             }
         }
     }
-    Ok(out.into_iter().collect())
+    Ok(filter::Applied {
+        domains: out.into_iter().collect(),
+        req_ids: reqs.into_iter().collect(),
+    })
 }
 
 fn host_of(url: &str) -> Option<String> {
@@ -590,10 +600,15 @@ mod tests {
             serde_json::from_str(json).unwrap()
         };
 
-        assert_eq!(store(&pool, &msg("gh"), &[]).unwrap(), Stored::Pending);
-        assert_eq!(store(&pool, &msg("nl"), &[]).unwrap(), Stored::Ignored);
+        let none = filter::Applied::default();
+        // A List-Unsubscribe header alone no longer ignores (JT-18), so
+        // the newsletter is marked sent to exercise the ignored path.
+        let mut nl = msg("nl");
+        nl.label_ids.push("SENT".into());
+        assert_eq!(store(&pool, &msg("gh"), &none).unwrap(), Stored::Pending);
+        assert_eq!(store(&pool, &nl, &none).unwrap(), Stored::Ignored);
         // Same gmail_id again: nothing new.
-        assert_eq!(store(&pool, &msg("gh"), &[]).unwrap(), Stored::AlreadyThere);
+        assert_eq!(store(&pool, &msg("gh"), &none).unwrap(), Stored::AlreadyThere);
 
         let rows: Vec<(String, String, Option<String>, Option<String>)> = block_on(
             sqlx::query_as("SELECT status, filter_reason, received_at, label_ids FROM emails ORDER BY id")
@@ -604,7 +619,7 @@ mod tests {
         assert_eq!((rows[0].0.as_str(), rows[0].1.as_str()), ("pending", "ats: greenhouse-mail.io"));
         assert_eq!(rows[0].2.as_deref(), Some("2026-09-21T14:13:20Z"));
         assert_eq!(rows[0].3.as_deref(), Some(r#"["INBOX","CATEGORY_UPDATES"]"#));
-        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("ignored", "newsletter: list-unsubscribe header"));
+        assert_eq!((rows[1].0.as_str(), rows[1].1.as_str()), ("ignored", "sent by you"));
         // The ignored one was stored without its content.
         assert_eq!(rows[1].3, None);
         let (body, snippet, subject): (Option<String>, Option<String>, Option<String>) = block_on(
@@ -720,14 +735,14 @@ mod tests {
     }
 
     #[test]
-    fn company_domains_from_applications() {
+    fn applied_from_applications() {
         let dir = scratch_dir();
         let pool = block_on(db::connect(&dir)).expect("connect");
         block_on(async {
             sqlx::query(
-                "INSERT INTO jobs (job_key, company, title, triple, url) VALUES
-                 ('a', 'Robinhood', 't', 'a', 'https://careers.robinhood.com/jobs/1'),
-                 ('b', 'Acme Corp', 't', 'b', 'https://boards.greenhouse.io/acme/jobs/2')",
+                "INSERT INTO jobs (job_key, company, title, triple, url, req_id) VALUES
+                 ('a', 'Robinhood', 't', 'a', 'https://careers.robinhood.com/jobs/1', ' 8142930 '),
+                 ('b', 'Acme Corp', 't', 'b', 'https://boards.greenhouse.io/acme/jobs/2', '12')",
             )
             .execute(&pool)
             .await
@@ -735,10 +750,13 @@ mod tests {
             sqlx::query("INSERT INTO applications (job_id) SELECT id FROM jobs").execute(&pool).await.unwrap();
             sqlx::query("INSERT INTO applications (company) VALUES ('TD Bank')").execute(&pool).await.unwrap();
         });
-        let mut d = company_domains(&pool).unwrap();
+        let a = applied(&pool).unwrap();
+        let mut d = a.domains;
         d.sort();
         // greenhouse.io is a job board, not Acme's domain.
         assert_eq!(d, ["acmecorp.com", "robinhood.com", "tdbank.com"]);
+        // Trimmed; "12" is too short to trust in a subject.
+        assert_eq!(a.req_ids, ["8142930"]);
 
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);

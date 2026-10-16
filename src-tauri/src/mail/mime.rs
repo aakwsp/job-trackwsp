@@ -58,7 +58,6 @@ pub struct Decoded {
     pub from: Option<String>,
     pub to: Option<String>,
     pub subject: Option<String>,
-    pub list_unsubscribe: bool,
     pub body_text: String,
 }
 
@@ -86,7 +85,6 @@ pub fn decode(msg: &Message) -> Decoded {
         from: header("From"),
         to: header("To"),
         subject: header("Subject"),
-        list_unsubscribe: header("List-Unsubscribe").is_some(),
         body_text: tidy(&body).chars().take(MAX_BODY_CHARS).collect(),
     }
 }
@@ -271,7 +269,6 @@ mod tests {
         assert_eq!(d.from.as_deref(), Some("Acme Recruiting <no-reply@us.greenhouse-mail.io>"));
         assert_eq!(d.to.as_deref(), Some("candidate@example.com"));
         assert_eq!(d.subject.as_deref(), Some("Thank you for applying to Acme"));
-        assert!(!d.list_unsubscribe);
         // The plain part, not the HTML one (which says "HTML version").
         assert!(d.body_text.starts_with("Hi Sam,\n\nThanks for applying to the Software Engineering Intern role."));
         assert!(!d.body_text.contains("HTML version"));
@@ -282,7 +279,6 @@ mod tests {
     #[test]
     fn html_only_is_stripped_to_text() {
         let d = decode(&sample("newsletter"));
-        assert!(d.list_unsubscribe);
         assert_eq!(
             d.body_text,
             // Block elements come out as paragraphs, one blank line apart.

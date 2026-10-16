@@ -806,4 +806,57 @@ mod tests {
         });
         assert_eq!(n, 42);
     }
+
+    /// One-off (JT-18): mail the old List-Unsubscribe rule ignored, re-fetched
+    /// from Gmail and run through extraction and routing (see
+    /// `mail::filter`). JT_IDS is a comma list of `emails.id`.
+    ///   JT_DB_DIR=... JT_IDS=30,20 cargo test --lib tests::recover_ignored -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn recover_ignored() {
+        use crate::*;
+        let dir = std::path::PathBuf::from(std::env::var("JT_DB_DIR").expect("JT_DB_DIR"));
+        let ids: Vec<i64> = std::env::var("JT_IDS").expect("JT_IDS").split(',').map(|s| s.trim().parse().unwrap()).collect();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).unwrap();
+        let config = dirs_config();
+        let creds = gmail::credentials::load(&gmail::credentials::path_in(&config)).unwrap();
+        let gmail_state = gmail::GmailState::new(Box::new(gmail::store::KeyringStore));
+        for id in &ids {
+            let gmail_id: String =
+                tauri::async_runtime::block_on(sqlx::query_scalar("SELECT gmail_id FROM emails WHERE id = ?").bind(id).fetch_one(&pool)).unwrap();
+            // Already pending or further along is a no-op, so this is safe to re-run.
+            mail::restore(&gmail_state, &pool, &creds, &gmail_id).unwrap();
+        }
+        let make_client = |key: String| -> Result<Box<dyn extract::gemini::LlmClient>, extract::gemini::CallError> {
+            Ok(Box::new(extract::gemini::GeminiHttp::new(key)?))
+        };
+        extract::run(&extract::ExtractState::default(), &pool, &gmail::store::KeyringStore, &make_client, &std::thread::sleep).unwrap();
+        if routing::is_live(&pool) {
+            let picker = gemini_picker(&pool);
+            routing::run(&routing::RoutingState::default(), &pool, false, picker.as_ref().map(|p| p as &dyn routing::picker::Picker)).unwrap();
+        }
+        for id in &ids {
+            type Row = (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<i64>, Option<String>);
+            let row: Row = tauri::async_runtime::block_on(
+                sqlx::query_as(
+                    "SELECT e.status, e.filter_reason, x.event_type, x.company, x.req_id, m.application_id, m.reasons
+                     FROM emails e
+                     LEFT JOIN extractions x ON x.id = (SELECT MAX(id) FROM extractions WHERE email_id = e.id)
+                     LEFT JOIN email_matches m ON m.email_id = e.id
+                     WHERE e.id = ?",
+                )
+                .bind(id)
+                .fetch_one(&pool),
+            )
+            .unwrap();
+            println!("{id}\t{row:?}");
+        }
+    }
+
+    /// `~/.config` (what Tauri's `config_dir()` gives on Linux).
+    fn dirs_config() -> std::path::PathBuf {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(std::env::var("HOME").unwrap()).join(".config"))
+    }
 }

@@ -158,13 +158,11 @@ pub fn role_similarity(a: &str, b: &str, company: &str) -> f64 {
 // application's req id, exact title or city? No LLM.
 
 /// The req id appears in the body as a token of its own, ignoring
-/// separators inside it ("R-0000187113" matches "r0000187113").
-pub fn body_has_req(body: &str, req_key: &str) -> bool {
+/// separators inside it ("R-0000187113" matches "r0000187113") and a
+/// year in front ("2026-90429" matches "90429").
+pub fn body_has_req(body: &str, key: &str) -> bool {
     body.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
-        .any(|tok| {
-            let t: String = tok.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
-            t == req_key
-        })
+        .any(|tok| req_key(tok).as_deref() == Some(key))
 }
 
 /// The application's exact title appears in the body (after `norm`, so
@@ -183,11 +181,17 @@ pub fn body_has_city(body: &str, city: &str) -> bool {
 
 /// A req id worth matching on: alphanumerics only, at least 5 characters
 /// with a digit, and not just a year ("2027" came back as a req id once).
-/// Short ids match other postings by accident too easily.
+/// Short ids match other postings by accident too easily. A year segment
+/// in front is dropped: AMD's mail says "2026-90429" for posting 90429.
 pub fn req_key(req: &str) -> Option<String> {
+    let is_year = |s: &str| s.len() == 4 && (s.starts_with("19") || s.starts_with("20")) && s.chars().all(|c| c.is_ascii_digit());
+    let req = req.trim();
+    let req = match req.split_once(|c: char| !c.is_ascii_alphanumeric()) {
+        Some((first, rest)) if is_year(first) && rest.chars().any(|c| c.is_ascii_alphanumeric()) => rest,
+        _ => req,
+    };
     let k: String = req.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
-    let is_year = k.len() == 4 && (k.starts_with("19") || k.starts_with("20")) && k.chars().all(|c| c.is_ascii_digit());
-    (k.len() >= 5 && !is_year && k.chars().any(|c| c.is_ascii_digit())).then_some(k)
+    (k.len() >= 5 && !is_year(&k) && k.chars().any(|c| c.is_ascii_digit())).then_some(k)
 }
 
 #[cfg(test)]
@@ -249,5 +253,9 @@ mod tests {
         assert_eq!(req_key("2027"), None);
         assert_eq!(req_key("abc"), None);
         assert_eq!(req_key("JR-12"), None); // too short to trust
+        // AMD's "<year>-<id>".
+        assert_eq!(req_key("2026-90429").as_deref(), Some("90429"));
+        assert_eq!(req_key("2026-12"), None);
+        assert!(body_has_req("AMD Application: 2026-90429 - Summer 2027", "90429"));
     }
 }
