@@ -137,7 +137,14 @@ insert a new row.
   confidence ≥ 0.8) assessment / interview / rejection goes auto below
   0.80 (reason "only open application at <co>"); several open there →
   checking. Ambiguous, unmatched, offers, reopening a closed
-  application → `checking`. Auto never moves an application backwards, never
+  application → `checking`. So are rejections that would close an
+  application (JT-43), whatever the score and the only-open rule, with
+  the reason "rejections need checking"; confirming applies them exactly
+  as auto would, and undo still works. A rejection attaching to one
+  already recorded stays auto. `settings` key `routing.auto_rejections`
+  = '1' / 'true' brings back auto rejections; missing means off. A rule
+  change only affects new decisions: routing only loads extracted /
+  checking mail, so auto emails are never re-decided. Auto never moves an application backwards, never
   duplicates a stage that's already recorded (it attaches to that event),
   never creates an application (a matching posting is only suggested), and
   writes stage events through `applications::write_email_event`, so undo

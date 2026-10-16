@@ -63,6 +63,35 @@ const ROLE_CLEAR: f64 = 0.6;
 const ROLE_MARGIN: f64 = 0.25;
 /// `settings` key: "1" once the user has okayed real (non-dry) runs.
 pub const LIVE_KEY: &str = "routing_live";
+/// `settings` key (JT-43): "1" / "true" lets rejections that change a
+/// stage go auto again. Missing or anything else: they go to checking.
+pub const AUTO_REJECTIONS_KEY: &str = "routing.auto_rejections";
+/// The reason stored on a rejection held for checking.
+pub const REJECTION_REASON: &str = "rejections need checking";
+
+/// Settings that change routing decisions. `Default` is the behaviour
+/// with nothing set.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Policy {
+    /// Rejections that would close an application may go auto (the old
+    /// behaviour). Off by default: they wait in checking.
+    pub auto_rejections: bool,
+}
+
+impl Policy {
+    pub fn load(pool: &SqlitePool) -> Policy {
+        let v = block_on(
+            sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+                .bind(AUTO_REJECTIONS_KEY)
+                .fetch_optional(pool),
+        )
+        .ok()
+        .flatten();
+        Policy {
+            auto_rejections: matches!(v.as_deref().map(str::trim), Some("1" | "true")),
+        }
+    }
+}
 
 const STAGES: [&str; 4] = ["applied", "assessment", "interview", "offer"];
 
@@ -169,9 +198,14 @@ pub struct Decision {
 
 // ── the decision ─────────────────────────────────────────────────────────
 
-/// Decides one email against the current snapshot. Pure: no DB, no
-/// mutation. `forced_app`: the user picked the application (confirm/edit).
+/// Decides one email against the current snapshot with the default
+/// `Policy`. Pure: no DB, no mutation. `forced_app`: the user picked the
+/// application (confirm/edit).
 pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Option<i64>) -> Decision {
+    decide_with(e, apps, jobs, forced_app, Policy::default())
+}
+
+pub fn decide_with(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Option<i64>, policy: Policy) -> Decision {
     let mut reasons = Vec::new();
     let mut score = 0.0;
     let sender_domain = sender_address(&e.from).rsplit_once('@').map(|(_, d)| d.to_string()).unwrap_or_default();
@@ -345,6 +379,16 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
     if only_open {
         reasons.push(format!("only open application at {}", matched.map(|a| a.company_key.as_str()).unwrap_or("")));
     }
+    // JT-43: a rejection that would close the application waits for you,
+    // like an offer, unless `routing.auto_rejections` is on. Attaching to
+    // a rejection already recorded is untouched. Not when you picked the
+    // application yourself (confirm / edit): that's the checking.
+    let hold_rejection = !policy.auto_rejections
+        && e.event_type == "rejection"
+        && matches!(&action, Action::WriteEvent(t) if t == "rejected");
+    if hold_rejection && forced_app.is_none() {
+        reasons.push(REJECTION_REASON.into());
+    }
 
     // 5. Route.
     let note = if e.user_touched {
@@ -361,6 +405,8 @@ pub fn decide(e: &EmailIn, apps: &[AppSnap], jobs: &[JobSnap], forced_app: Optio
         Some(n)
     } else if e.event_type == "offer" {
         Some("offers are always checked".into())
+    } else if hold_rejection {
+        Some(REJECTION_REASON.into())
     } else if score < threshold(&action, by_llm) && !only_open {
         Some(format!("score {score:.2} below {:.2}", threshold(&action, by_llm)))
     } else {
@@ -648,7 +694,10 @@ fn run_inner(pool: &SqlitePool, dry: bool, picker: Option<&dyn picker::Picker>) 
     }
     let mut apps = load_apps(pool).map_err(err)?;
     let jobs = load_jobs(pool).map_err(err)?;
+    // Only extracted / checking mail is loaded, so a rule change (like
+    // JT-43's) applies to new decisions only: auto ones aren't revisited.
     let emails = load_emails(pool, None).map_err(err)?;
+    let policy = Policy::load(pool);
     let job_names: HashMap<i64, String> = block_on(sqlx::query_as::<_, (i64, String, String)>(
         "SELECT id, company, title FROM jobs",
     )
@@ -661,7 +710,7 @@ fn run_inner(pool: &SqlitePool, dry: bool, picker: Option<&dyn picker::Picker>) 
     let mut rows = Vec::new();
     let mut fake_event = -1;
     for e in &emails {
-        let mut d = decide(e, &apps, &jobs, None);
+        let mut d = decide_with(e, &apps, &jobs, None, policy);
         // Still ambiguous: ask the picker (cached per candidate set), and
         // decide again with its answer as evidence.
         if d.candidates.len() > 1 && !e.user_touched {
@@ -669,7 +718,7 @@ fn run_inner(pool: &SqlitePool, dry: bool, picker: Option<&dyn picker::Picker>) 
                 if let Some(pick) = llm_pick(pool, p, e, &apps, &d.candidates, dry) {
                     let mut e2 = e.clone();
                     e2.llm_pick = Some(pick);
-                    d = decide(&e2, &apps, &jobs, None);
+                    d = decide_with(&e2, &apps, &jobs, None, policy);
                 }
             }
         }
@@ -1790,6 +1839,123 @@ mod tests {
         assert_eq!(matches, 0);
 
         assert!(run(&state, &pool, false, None).is_err(), "live run without the switch");
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── JT-43: rejections go to checking unless routing.auto_rejections ──
+
+    fn acme_applied() -> Vec<AppSnap> {
+        vec![app(1, "Acme", "Backend Intern", Some("R-1001"), "applied", &[(10, "applied")])]
+    }
+
+    #[test]
+    fn strong_rejection_goes_to_checking_with_the_flag_off() {
+        let e = email(1, "rejection", Some("Acme"), Some("Backend Intern"), Some("R-1001"), "x@acme.com");
+        let d = decide(&e, &acme_applied(), &[], None);
+        assert!(d.score >= 0.95, "{}", d.score);
+        assert_eq!(d.application_id, Some(1));
+        assert_eq!((d.action.clone(), d.route), (Action::WriteEvent("rejected".into()), Route::Checking));
+        assert_eq!(d.note.as_deref(), Some(REJECTION_REASON));
+        // The reason is stored; the score and the other reasons stay.
+        assert!(d.reasons.iter().any(|r| r == REJECTION_REASON));
+        assert!(d.reasons.iter().any(|r| r == "req_id match"));
+    }
+
+    #[test]
+    fn only_open_application_rejection_goes_to_checking_with_the_flag_off() {
+        let one = vec![app(4, "KPMG", "Software Developer Intern Co-op", None, "applied", &[(40, "applied")])];
+        let e = email(1, "rejection", Some("KPMG"), None, None, "kpmg@talent.icims.com");
+        let d = decide(&e, &one, &[], None);
+        assert!(d.reasons.iter().any(|r| r == "only open application at kpmg"));
+        assert_eq!((d.application_id, d.route), (Some(4), Route::Checking));
+        assert_eq!(d.note.as_deref(), Some(REJECTION_REASON));
+        // With the flag on, the only-open rule takes it as before.
+        let d = decide_with(&e, &one, &[], None, Policy { auto_rejections: true });
+        assert_eq!((d.action, d.route), (Action::WriteEvent("rejected".into()), Route::Auto));
+    }
+
+    #[test]
+    fn rejection_for_an_already_rejected_application_still_attaches_auto() {
+        let apps = vec![app(2, "Beta", "Backend Intern", None, "rejected", &[(4, "applied"), (5, "rejected")])];
+        let d = decide(&email(1, "rejection", Some("Beta"), Some("Backend Intern"), None, "x@beta.com"), &apps, &[], None);
+        assert!(d.score >= ATTACH_THRESHOLD, "{}", d.score);
+        assert_eq!((d.action, d.route), (Action::AttachEvent(5), Route::Auto));
+        assert!(!d.reasons.iter().any(|r| r == REJECTION_REASON));
+    }
+
+    #[test]
+    fn strong_rejection_goes_auto_with_the_flag_on() {
+        let e = email(1, "rejection", Some("Acme"), Some("Backend Intern"), Some("R-1001"), "x@acme.com");
+        let d = decide_with(&e, &acme_applied(), &[], None, Policy { auto_rejections: true });
+        assert_eq!((d.action, d.route), (Action::WriteEvent("rejected".into()), Route::Auto));
+        assert_eq!(d.note, None);
+        assert!(!d.reasons.iter().any(|r| r == REJECTION_REASON));
+    }
+
+    #[test]
+    fn offers_and_other_stages_are_unchanged_by_the_rejection_rule() {
+        for policy in [Policy::default(), Policy { auto_rejections: true }] {
+            let offer = email(1, "offer", Some("Acme"), Some("Backend Intern"), Some("R-1001"), "x@acme.com");
+            assert_eq!(decide_with(&offer, &acme_applied(), &[], None, policy).route, Route::Checking);
+            for stage in ["assessment", "interview"] {
+                let e = email(2, stage, Some("Acme"), Some("Backend Intern"), Some("R-1001"), "x@acme.com");
+                let d = decide_with(&e, &acme_applied(), &[], None, policy);
+                assert!(d.score >= AUTO_THRESHOLD, "{}", d.score);
+                assert_eq!((d.action, d.route), (Action::WriteEvent(stage.into()), Route::Auto));
+            }
+        }
+    }
+
+    #[test]
+    fn held_rejection_confirms_like_auto_and_undoes() {
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let app = seed(&pool, &[("rejection", "2026-09-10T10:00:00Z")]);
+        live(&pool);
+        let state = RoutingState::default();
+        let rows = run(&state, &pool, false, None).unwrap();
+        assert_eq!(rows[0].decision.route, Route::Checking);
+        assert_eq!(app_state(&pool, app), ("applied".into(), vec!["applied".into()]));
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "checking");
+        let reasons: String = block_on(sqlx::query_scalar("SELECT reasons FROM email_matches WHERE email_id = ?").bind(email).fetch_one(&pool)).unwrap();
+        assert!(reasons.contains(REJECTION_REASON), "{reasons}");
+
+        // c in INBOX: the rejection is written as auto would write it.
+        confirm(&pool, email, None, None).unwrap();
+        assert_eq!(app_state(&pool, app), ("rejected".into(), vec!["applied".into(), "rejected".into()]));
+        assert_eq!(email_status(&pool, email).unwrap(), "confirmed");
+        // u: undone again.
+        undo(&pool, email).unwrap();
+        assert_eq!(app_state(&pool, app), ("applied".into(), vec!["applied".into()]));
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rerun_never_revisits_rejections_already_auto() {
+        // Routed auto under the old behaviour (flag on), then the flag is
+        // dropped: the next runs leave that rejection alone.
+        let dir = scratch_dir();
+        let pool = block_on(db::connect(&dir)).unwrap();
+        let app = seed(&pool, &[("rejection", "2026-09-10T10:00:00Z")]);
+        live(&pool);
+        block_on(sqlx::query("INSERT INTO settings (key, value) VALUES (?, 'true')").bind(AUTO_REJECTIONS_KEY).execute(&pool)).unwrap();
+        let state = RoutingState::default();
+        assert_eq!(run(&state, &pool, false, None).unwrap()[0].decision.route, Route::Auto);
+        assert_eq!(app_state(&pool, app).0, "rejected");
+
+        block_on(sqlx::query("DELETE FROM settings WHERE key = ?").bind(AUTO_REJECTIONS_KEY).execute(&pool)).unwrap();
+        assert!(run(&state, &pool, false, None).unwrap().is_empty());
+        // Applications changing re-runs routing too; still nothing.
+        block_on(crate::jobs::set_applied(&pool, 1, true)).unwrap();
+        assert!(run(&state, &pool, false, None).unwrap().is_empty());
+        assert_eq!(app_state(&pool, app), ("rejected".into(), vec!["applied".into(), "rejected".into()]));
+        let email: i64 = block_on(sqlx::query_scalar("SELECT id FROM emails").fetch_one(&pool)).unwrap();
+        assert_eq!(email_status(&pool, email).unwrap(), "auto");
+
         drop(pool);
         let _ = std::fs::remove_dir_all(&dir);
     }
