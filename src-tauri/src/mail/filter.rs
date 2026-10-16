@@ -182,7 +182,7 @@ pub fn classify(input: &Input, applied: &Applied) -> Verdict {
         return Verdict::Ignored(format!("account mail: {d}"));
     }
     if input.label_ids.iter().any(|l| l == "SENT") {
-        return Verdict::Ignored("sent by you".into());
+        return Verdict::Ignored("sent by me".into());
     }
 
     if let Some(d) = applied.domains.iter().find(|d| is_domain_or_sub(&domain, d)) {
@@ -320,7 +320,7 @@ mod tests {
         assert!(pending(run("x@acme.myworkdayjobs.com", &[], &[])));
         assert!(pending(run("support@hackerrankforwork.com", &[], &[])));
         // Only real subdomains: "notgreenhouse.io" is not greenhouse.io.
-        assert_eq!(run("a@notgreenhouse.io", &["SENT"], &[]), Verdict::Ignored("sent by you".into()));
+        assert_eq!(run("a@notgreenhouse.io", &["SENT"], &[]), Verdict::Ignored("sent by me".into()));
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
             run("someone@writer.substack.com", &[], &[]),
             Verdict::Ignored("ignored domain: substack.com".into())
         );
-        assert_eq!(run("me@example.com", &["SENT"], &[]), Verdict::Ignored("sent by you".into()));
+        assert_eq!(run("me@example.com", &["SENT"], &[]), Verdict::Ignored("sent by me".into()));
         // A plain message from an unknown sender goes on to the LLM,
         // newsletter header or not.
         assert_eq!(

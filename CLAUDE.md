@@ -95,6 +95,11 @@ insert a new row.
   at a time; the first poll backfills since 2026-08-01, later ones use
   `history.list` from `settings.mail_history_id` (404 → a search since the
   last successful poll). Gmail disconnected = no polling, no errors.
+  Threads (JT-42): each message is its own email, stored and deduped by
+  `gmail_id` only; `thread_id` is kept for pending mail but nothing is
+  keyed on it, so a reply in an old thread is new mail like any other.
+  The user's own sent mail (`SENT` label) is ignored as "sent by me",
+  metadata only, and doesn't affect the rest of its thread.
 - `extractions` — what the LLM pulled from an email, awaiting confirmation.
   Nothing changes an application until the user confirms. JT-15
   (`src-tauri/src/extract/`): after each poll, every `pending` email goes to
