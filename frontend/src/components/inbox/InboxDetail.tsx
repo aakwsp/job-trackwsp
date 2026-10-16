@@ -8,9 +8,9 @@ import { outlineButton, primaryButton } from '../record/parts'
 import Timeline from '../Timeline'
 import Select from '../Select'
 
-// The open email, top to bottom (JT-41): // email (+ [ open in gmail ]),
-// // extracted, // match, // actions, then // timeline at the bottom.
-// Only the company · role line stays pinned while it scrolls. The body is plain text in a
+// The open email, top to bottom (JT-41): company · role and // timeline
+// pinned, then // email (+ [ open in gmail ]), // extracted, // match,
+// // actions. The body is plain text in a
 // <blockquote> with `white-space: pre-line`: email HTML is never rendered
 // (it was stripped to text when stored, and React escapes it anyway).
 
@@ -198,7 +198,7 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
   return (
     <>
       <Pinned>
-        {/* company · role, pinned while the rest scrolls. */}
+        {/* company · role, pinned with the timeline while the body scrolls. */}
         <p className="truncate px-8 pt-3 pb-2.5 text-meta leading-normal">
           <span className="font-serif text-[1.0625rem] lowercase">{(app?.company ?? x?.company ?? email.from_addr ?? '').toLowerCase()}</span>
           {(app?.title ?? x?.role) && (
@@ -208,6 +208,14 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
             </>
           )}
         </p>
+        {detail.timeline.length > 0 && (
+          <>
+            <Band flush aside={`${(app?.company ?? '').toLowerCase()} · ${emailCount} ${emailCount === 1 ? 'email' : 'emails'}`}>
+              // timeline
+            </Band>
+            <Timeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
+          </>
+        )}
       </Pinned>
       <Band flush>// email</Band>
       <div className="px-8 pt-1.5">
@@ -404,15 +412,6 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
         </div>
         <p className="mt-3.5 text-[0.71875rem] leading-[1.6] text-text-muted">{effect}</p>
       </div>
-
-      {/* Last: this application's other mail. A diamond opens that email
-          here; ←/→ walk it. */}
-      {detail.timeline.length > 0 && (
-        <>
-          <Band aside={`${(app?.company ?? '').toLowerCase()} · ${emailCount} ${emailCount === 1 ? 'email' : 'emails'}`}>// timeline</Band>
-          <Timeline nodes={detail.timeline} currentId={email.id} large={large} onPick={onOpenEmail} />
-        </>
-      )}
       <p className="px-8 pt-[1.625rem] pb-7 text-micro leading-[1.8] text-text-dim">
         j/k next/prev · ←/→ along timeline · 1–9 match · c / enter confirm · e edit · x reject · m read/unread · g newest/company · esc stop editing
       </p>
