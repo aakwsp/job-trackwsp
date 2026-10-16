@@ -158,7 +158,12 @@ insert a new row.
   summary / application / emails tabs. Diamonds = emails in their stage
   colour (hollow while checking); squares = events that aren't emails
   (posting first seen, applied by hand, manual stage changes). An event an
-  email wrote is drawn once, as that email. No other posting noise.
+  email wrote is drawn once, as that email. No other posting noise. In
+  INBOX a diamond selects that email in the detail pane; in the record
+  (`record/RecordTimeline.tsx`, JT-41) it opens the email inline under the
+  track (plain text only), with [ open in inbox → ], which switches to
+  INBOX and reveals it (`useInbox.reveal`: clears the search and any
+  filter hiding it, unfolds its section, scrolls to it).
 - `settings` — small non-secret app values. `gmail_address` is the connected
   job account, which is also the keyring user its token is stored under.
   `mail_history_id`, `mail_last_poll_at` and `mail_last_new` belong to the
