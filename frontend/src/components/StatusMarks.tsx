@@ -1,24 +1,28 @@
 import type { Job } from '../types'
-import { flagSlots, statusInfo } from '../lib/jobs'
+import { activeFlags, flagSlots, statusInfo } from '../lib/jobs'
 
 type Props = {
   job: Job
   onOpen: (job: Job) => void
+  /** LINE view: every flag keeps its own slot, so marks line up in columns. */
+  slots?: boolean
 }
 
 // Top-right of a card (end of a line): the flag squares in FLAGS order, the
 // diamond, then ↗. The diamond and the card's stripe both come from
 // `statusInfo`, so they can't disagree.
 //
-// An absent flag still renders its `.flag` box, just with no `data-color`,
-// so it has no background: an invisible spacer that keeps every later mark
-// in the same x position on every card. `aria-hidden` keeps screen readers
-// from announcing the empty box.
-export default function StatusMarks({ job, onOpen }: Props) {
+// Cards pack the active flags side by side against the diamond, no gaps.
+// With `slots` (LINE view), an absent flag still renders its `.flag` box,
+// just with no `data-color`, so it has no background: an invisible spacer
+// that keeps every later mark in the same x position on every row.
+// `aria-hidden` keeps screen readers from announcing the empty box.
+export default function StatusMarks({ job, onOpen, slots = false }: Props) {
   const status = statusInfo(job)
+  const flags = slots ? flagSlots(job) : activeFlags(job).map((flag) => ({ flag, on: true }))
   return (
     <div className="flex shrink-0 items-center gap-2 text-meta text-text-muted">
-      {flagSlots(job).map(({ flag, on }) =>
+      {flags.map(({ flag, on }) =>
         on ? (
           <span key={flag.key} className="flag" data-color={flag.color} title={flag.hint} aria-label={flag.hint} />
         ) : (

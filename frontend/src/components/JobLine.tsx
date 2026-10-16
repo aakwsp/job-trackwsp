@@ -58,7 +58,7 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
           <Labels job={job} />
         </span>
       </span>
-      <StatusMarks job={job} onOpen={onOpen} />
+      <StatusMarks job={job} onOpen={onOpen} slots />
     </div>
   )
 }
