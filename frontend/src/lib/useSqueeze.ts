@@ -12,7 +12,7 @@ import { useLayoutEffect, useRef, useState, type RefObject } from 'react'
 // least that wide again. Without remembering it, squeezing would remove
 // the overflow and the next check would unsqueeze, flickering forever.
 //
-// `contentKey` names what's in the band (the chips, the UI scale): when it
+// `contentKey` names what's in the band (the chips, the sort and view words): when it
 // changes, the band is measured again at full size. Resetting is done
 // while rendering (React's "adjust state when a prop changes" pattern, not
 // an effect): React re-renders straight away, before anything is shown.

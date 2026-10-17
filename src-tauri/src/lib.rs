@@ -92,14 +92,41 @@ async fn sync_now(app: tauri::AppHandle) -> Result<sync::SyncCounts, sync::SyncE
     .await
 }
 
-/// Every non-hidden job for the list view, with its `applied` flag. These
+/// Every non-hidden job for the list view, with its `applied` flag,
+/// sorted in Rust (JT-39). `sort`: the toolbar's choice, which is also
+/// remembered (`settings.jobs_sort`); None uses the remembered one. These
 /// three are `async fn` (unlike `sync_now`) because they only touch SQLx,
 /// which is async already — nothing blocking to keep off the runtime.
 #[tauri::command]
 async fn list_jobs(
     pool: tauri::State<'_, SqlitePool>,
+    sort: Option<jobs::JobSort>,
 ) -> Result<Vec<jobs::JobRow>, jobs::JobsError> {
-    jobs::list(&pool).await
+    let sort = match sort {
+        Some(s) => {
+            jobs::save_sort(&pool, s).await?;
+            s
+        }
+        None => jobs::stored_sort(&pool).await?,
+    };
+    jobs::list_sorted(&pool, sort).await
+}
+
+/// INBOX's remembered sort (JT-39), None until one is saved.
+#[tauri::command]
+async fn inbox_sort(pool: tauri::State<'_, SqlitePool>) -> Result<Option<inbox::MailSort>, String> {
+    inbox::stored_sort(&pool).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_inbox_sort(pool: tauri::State<'_, SqlitePool>, sort: inbox::MailSort) -> Result<(), String> {
+    inbox::save_sort(&pool, sort).await.map_err(|e| e.to_string())
+}
+
+/// The remembered JOBS sort, for the toolbar on start.
+#[tauri::command]
+async fn jobs_sort(pool: tauri::State<'_, SqlitePool>) -> Result<jobs::JobSort, jobs::JobsError> {
+    jobs::stored_sort(&pool).await
 }
 
 /// Creates or removes the `applications` row for a job. Never writes `jobs`.
@@ -727,6 +754,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             sync_now,
             list_jobs,
+            jobs_sort,
+            inbox_sort,
+            set_inbox_sort,
             set_applied,
             save_notes,
             open_posting,

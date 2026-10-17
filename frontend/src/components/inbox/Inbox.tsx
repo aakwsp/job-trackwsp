@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperti
 import { loadFolded, loadListCollapsed, saveFolded, saveListCollapsed, type FoldKey } from '../../lib/inboxFold'
 import * as api from '../../api'
 import type { IgnoredRow, InboxRow } from '../../types'
-import { LOW_SCORE, eventColor, eventLabel, loadSort, localDay, saveSort, sortRows, type MailSort } from '../../lib/inbox'
+import { LOW_SCORE, eventColor, eventLabel, localDay, sortRows } from '../../lib/inbox'
 import type { useInbox } from '../../lib/useInbox'
 import InboxDetailPane from './InboxDetail'
 import InboxBar from './InboxBar'
@@ -26,12 +26,8 @@ type Props = {
 
 export default function Inbox({ inbox, top, connected }: Props) {
   // Sort, inside each section: newest or company. `g` flips it.
-  // Remembered like the JOBS view mode.
-  const [sort, setSortState] = useState<MailSort>(loadSort)
-  function setSort(s: MailSort) {
-    setSortState(s)
-    saveSort(s)
-  }
+  // Remembered in settings (useInbox).
+  const { sort, setSort } = inbox
   // The search line is always there: `/` jumps into it, esc clears it and
   // leaves it.
   const searchRef = useRef<HTMLInputElement>(null)
@@ -60,7 +56,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
   // The toolbar band sticks to the top; its height goes into --toolbar-h
   // (as App does for JOBS) so the section bands, company headers and the
   // detail pane stick right under it. ResizeObserver: it changes when
-  // chips wrap or the UI scale changes.
+  // chips wrap.
   const barRef = useRef<HTMLDivElement>(null)
   const [barH, setBarH] = useState(0)
   useLayoutEffect(() => {
@@ -182,7 +178,7 @@ export default function Inbox({ inbox, top, connected }: Props) {
       } else if (e.key === 'm' && r) {
         inbox.act(() => api.inboxSetRead(r.id, !r.read))
       } else if (e.key === 'g') {
-        setSort(by === 'newest' ? 'company' : 'newest')
+        inbox.setSort(by === 'newest' ? 'company' : 'newest')
       } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && timeline.length > 0) {
         const i = timeline.findIndex((n) => n.email_id === id)
         const next = timeline[i + (e.key === 'ArrowRight' ? 1 : -1)]

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import * as api from '../api'
 import type { IgnoredRow, InboxDetail, InboxRow } from '../types'
+import { loadSort, saveSort, type MailSort } from './inbox'
 
 // INBOX's data (JT-18): the list, the open email's detail, the ignored
 // list. Rust emits `inbox-changed` after routing runs and INBOX actions,
@@ -17,6 +18,17 @@ export function useInbox(active: boolean, notify: Notify) {
   const [detail, setDetail] = useState<InboxDetail | null>(null)
   const [ignored, setIgnored] = useState<IgnoredRow[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The sort (JT-39), from `settings.inbox_sort`: read once here rather
+  // than in Inbox, which remounts on every page switch. null while loading.
+  const [sort, setSortState] = useState<MailSort | null>(null)
+  useEffect(() => {
+    loadSort().then(setSortState)
+  }, [])
+  const setSort = useCallback((s: MailSort) => {
+    setSortState(s)
+    saveSort(s)
+  }, [])
+
   // Bumped by the events below; the effects re-fetch when it changes.
   const [version, setVersion] = useState(0)
   // Search (JT-18). `query` is what's typed; `applied` follows it ~120ms
@@ -130,6 +142,8 @@ export function useInbox(active: boolean, notify: Notify) {
     detail: detail && detail.email.id === openId ? detail : null,
     error,
     open,
+    sort: sort ?? 'newest',
+    setSort,
     revealId,
     reveal,
     revealed,

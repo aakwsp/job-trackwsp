@@ -6,8 +6,37 @@
 //! separately (`ignored`) with only who / what / when, so it can be put
 //! back with `mail::restore`.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+
+/// `settings` key holding INBOX's sort (JT-39), like JOBS' `jobs_sort`.
+pub const SORT_KEY: &str = "inbox_sort";
+
+/// INBOX's sort. The rows are sorted in React (`sortRows`); only the
+/// choice is stored here.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MailSort {
+    Newest,
+    Company,
+}
+
+/// The remembered INBOX sort; None when nothing (or nothing known) is
+/// saved, so the frontend can carry over its old localStorage value once.
+pub async fn stored_sort(pool: &SqlitePool) -> Result<Option<MailSort>, sqlx::Error> {
+    let v: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?").bind(SORT_KEY).fetch_optional(pool).await?;
+    Ok(v.and_then(|v| serde_json::from_value(serde_json::Value::String(v)).ok()))
+}
+
+pub async fn save_sort(pool: &SqlitePool, sort: MailSort) -> Result<(), sqlx::Error> {
+    let value = serde_json::to_value(sort).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value")
+        .bind(SORT_KEY)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
 
 fn block_on<F: std::future::Future>(f: F) -> F::Output {
     tauri::async_runtime::block_on(f)
@@ -354,6 +383,21 @@ pub fn set_read(pool: &SqlitePool, email_id: i64, read: bool) -> Result<(), sqlx
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn inbox_sort_is_remembered_in_settings() {
+        let dir = std::env::temp_dir().join(format!("jt-inbox-sort-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+        let pool = super::block_on(crate::db::connect(&dir)).unwrap();
+        super::block_on(async {
+            assert_eq!(super::stored_sort(&pool).await.unwrap(), None);
+            super::save_sort(&pool, super::MailSort::Company).await.unwrap();
+            assert_eq!(super::stored_sort(&pool).await.unwrap(), Some(super::MailSort::Company));
+            let raw: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'inbox_sort'").fetch_one(&pool).await.unwrap();
+            assert_eq!(raw, "company");
+        });
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
     use crate::db;
 

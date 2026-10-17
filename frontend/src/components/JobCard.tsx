@@ -51,7 +51,7 @@ export default function JobCard({ job, hub, compact, onSelect, onOpen }: Props) 
           row already has `mt-auto`, and a second margin-top class on it
           wouldn't add up: only one of the two would apply. */}
       {/* Cut by the card's real width, not a character count, so it adapts
-          to window size and UI scale. `truncate` is Tailwind for exactly
+          to the window size. `truncate` is Tailwind for exactly
           white-space: nowrap + overflow: hidden + text-overflow: ellipsis. */}
       <p className={`truncate text-sub leading-snug text-text-muted ${compact ? 'mt-1' : 'mt-2 mb-4'}`} title={job.title}>
         {job.title}
