@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import * as api from '../api'
 
-// The job account's connection, for the QUEUE page (JT-13). A custom hook,
-// like useUiScale: App calls it once and passes the pieces to the hero and
+// The job account's connection, for the QUEUE page (JT-13). A custom hook:
+// App calls it once and passes the pieces to the hero and
 // the page body, which both show part of it.
 export type GmailStatus = { kind: 'checking' } | { kind: 'disconnected' } | { kind: 'connected'; address: string }
 

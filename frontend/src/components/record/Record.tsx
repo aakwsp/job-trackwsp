@@ -177,7 +177,7 @@ export default function Record({
         close()
         return
       }
-      // Leave ctrl/alt combos (ctrl +/- is the UI scale) and held keys alone.
+      // Leave ctrl/alt combos (ctrl+1–3 switch pages) and held keys alone.
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return
       // While typing a note, letters are text, not shortcuts.
       if (e.target instanceof Element && e.target.closest('textarea, input')) return

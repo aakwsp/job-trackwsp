@@ -27,6 +27,9 @@ export type Job = {
   hubs: string[]
 }
 
+// Mirrors `jobs::JobSort` (JT-39): the JOBS toolbar's sort, done in Rust.
+export type JobSort = 'deadline' | 'first_seen' | 'last_seen' | 'company' | 'status'
+
 // Mirrors `sync::SyncCounts` in src-tauri/src/sync/mod.rs.
 export type SyncCounts = {
   inserted: number

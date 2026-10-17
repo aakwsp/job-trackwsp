@@ -1,12 +1,12 @@
 import { useRef } from 'react'
-import type { Filters } from '../types'
+import type { Filters, JobSort } from '../types'
 import { activeRows } from '../lib/filters'
+import { JOB_SORTS } from '../lib/jobs'
 import { useSqueeze } from '../lib/useSqueeze'
 import { VIEW_MODES, type ViewMode } from '../lib/view'
-import type { Scale } from '../lib/scale'
 import FilterChips from './FilterChips'
 import FilterMenu from './FilterMenu'
-import OptionButton from './OptionButton'
+import SortControl from './SortControl'
 import { field, textButton } from './styles'
 
 type Props = {
@@ -16,7 +16,9 @@ type Props = {
   counts: Map<string, number>
   view: ViewMode
   onView: (v: ViewMode) => void
-  scale: Scale
+  // Sorted in Rust (JT-39); null until the remembered one has loaded.
+  sort: JobSort | null
+  onSort: (s: JobSort) => void
   onCollapseAll: () => void
   onExpandAll: () => void
 }
@@ -30,13 +32,14 @@ export default function FilterBar({
   counts,
   view,
   onView,
-  scale,
+  sort,
+  onSort,
   onCollapseAll,
   onExpandAll,
 }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const chips = activeRows(filters).map(({ row, mode }) => `${row.group}:${row.key}:${mode}`)
-  const squeezed = useSqueeze(ref, `${chips.join(',')}|${scale}`)
+  const squeezed = useSqueeze(ref, `${chips.join(',')}|${sort}|${view}`)
   // Unsqueezed nothing may shrink, so overflow shows up to be measured.
   const box = squeezed ? 'min-w-0 shrink' : 'shrink-0'
   return (
@@ -67,18 +70,15 @@ export default function FilterBar({
       {/* `ml-auto` on the first item of a flex row pushes it and everything
           after it to the right edge. */}
       <span className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
-        <span className="mr-2 text-text-dim" title="ui scale · ctrl +/- · ctrl 0 to reset">
-          {Math.round(scale * 100)}%
-        </span>
-        {/* Same words-with-underline control as INBOX's sort. */}
-        <span className="flex items-center gap-1">
-          <span className="pr-0.5 text-text-dim">view</span>
-          {VIEW_MODES.map(({ mode, word, label }) => (
-            <OptionButton key={mode} on={view === mode} onClick={() => onView(mode)} title={label}>
-              {word}
-            </OptionButton>
-          ))}
-        </span>
+        {/* Where INBOX has its sort: first on the right. */}
+        {sort && <SortControl<JobSort> options={JOB_SORTS} value={sort} onChange={onSort} />}
+        {/* [ view · line ]: the same control as sort. */}
+        <SortControl<ViewMode>
+          label="view"
+          options={VIEW_MODES.map(({ mode, word, label }) => ({ key: mode, label: word, title: label }))}
+          value={view}
+          onChange={onView}
+        />
         <button type="button" onClick={onCollapseAll} className={`${textButton} ml-2 text-text-muted`} title="collapse all">
           [ - ]
         </button>

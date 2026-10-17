@@ -233,6 +233,21 @@ lowercase, hairline dividers, zero border radius anywhere, no shadows.
   job object, so applying from one updates all; the hero and section
   counts count postings, not copies. The hub / city box and search match
   any of a posting's cities and hubs.
+- JOBS sort (JT-39): "[ sort · deadline ]" in the toolbar, a bracketed
+  button whose small list offers deadline, first seen, last seen, company,
+  status (`SortControl`, shared with INBOX's "[ sort · newest ]" and used
+  for "[ view · line ]" too); `g` cycles the sort without opening it. Sorting is in Rust (`list_jobs` takes `jobs::JobSort`,
+  `jobs::sort_jobs`), within each hub section; React only buckets, so the
+  sections keep their order and a posting in two hubs sorts the same in
+  both. deadline (the default, JOBS' original order): upcoming soonest
+  first, then rolling, then past due most recent first, then most recently
+  seen; first seen / last seen: newest first, none last; company: A–Z;
+  status: the stripe order, closing soon (≤ 7 days, not applied) → applied
+  → has deadline → rolling → past due or rejected. Every key then breaks
+  ties on company, title, id. Remembered in `settings.jobs_sort`; INBOX's
+  sort (sorted in React) likewise in `settings.inbox_sort`, read once by
+  `useInbox` (the old localStorage `jt.inbox.sort` is carried over on
+  first load, then removed).
 - The list must stay **dense**: there are 230+ postings, so rows, not cards.
   Cards are only for a short "closing soon" strip.
 

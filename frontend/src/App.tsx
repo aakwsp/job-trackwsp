@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import * as api from './api'
 import { listen } from '@tauri-apps/api/event'
-import type { Application, Filters, Job } from './types'
-import { DEFAULT_FILTERS, groupByHub, matchesFilters, sectionsOf } from './lib/jobs'
+import type { Application, Filters, Job, JobSort } from './types'
+import { DEFAULT_FILTERS, JOB_SORTS, groupByHub, matchesFilters, sectionsOf } from './lib/jobs'
 import { loadFilters, rowCounts, saveFilters } from './lib/filters'
 import { loadView, saveView, type ViewMode } from './lib/view'
-import { useUiScale } from './lib/useUiScale'
 import FilterBar from './components/FilterBar'
 import CityGroup from './components/CityGroup'
 import Record from './components/record/Record'
@@ -68,7 +67,6 @@ export default function App() {
   // Passing a function (not `loadView()`) makes it a lazy initializer:
   // React calls it once on mount instead of reading storage every render.
   const [view, setView] = useState<ViewMode>(loadView)
-  const scale = useUiScale()
   const [syncing, setSyncing] = useState(false)
   // One line of feedback under the header: sync result or a failed action.
   const [notice, setNotice] = useState<string | null>(null)
@@ -111,19 +109,32 @@ export default function App() {
   const toolbarRef = useRef<HTMLDivElement>(null)
   const [toolbarH, setToolbarH] = useState(0)
 
+  // The JOBS sort (JT-39): Rust sorts, and remembers it in settings. null
+  // until the remembered one is read, so the first fetch already uses it.
+  const [jobSort, setJobSort] = useState<JobSort | null>(null)
   useEffect(() => {
+    api
+      .jobsSort()
+      .then(setJobSort)
+      .catch(() => setJobSort('deadline'))
+  }, [])
+
+  useEffect(() => {
+    if (jobSort === null) return
     // If the effect re-runs (or StrictMode mounts twice in dev) before the
     // promise settles, the stale result is ignored instead of overwriting a
     // newer one.
     let stale = false
-    // Both lists in parallel; the page is ready once both are in.
-    Promise.all([api.listJobs(), api.listApplications()])
+    // Both lists in parallel; the page is ready once both are in. A new
+    // sort re-fetches too: the list stays on screen until the sorted one
+    // replaces it.
+    Promise.all([api.listJobs(jobSort), api.listApplications()])
       .then(([jobs, apps]) => !stale && setLoad({ kind: 'ready', jobs, apps }))
       .catch((e) => !stale && setLoad({ kind: 'error', message: String(e) }))
     return () => {
       stale = true
     }
-  }, [reloadKey])
+  }, [reloadKey, jobSort])
 
   // INBOX actions can change the lists too (a confirm moves a stage,
   // [ + new job ] adds a posting and an application): reload them quietly.
@@ -164,8 +175,7 @@ export default function App() {
     if (mainRef.current) mainRef.current.scrollTop = scrollByPage.current[page] ?? 0
   }, [page])
 
-  // Track the toolbar's height (it changes when chips wrap or the UI scale
-  // changes). ResizeObserver calls back whenever the element's size changes.
+  // Track the toolbar's height (it changes when chips wrap). ResizeObserver calls back whenever the element's size changes.
   // Re-run per page: the toolbar only exists on the jobs view.
   useLayoutEffect(() => {
     const el = toolbarRef.current
@@ -193,8 +203,7 @@ export default function App() {
       if (!e.ctrlKey || e.altKey || e.metaKey || e.shiftKey || e.repeat) return
       const i = PAGES.findIndex((p) => p.page === page)
       let target: Page | undefined
-      // Compared as text, not `Number(e.key)`: ctrl+0 is the UI scale's
-      // reset (useUiScale), and `Number('')` would be 0 as well.
+      // Compared as text, not `Number(e.key)`: `Number('')` would be 0.
       const digit = ['1', '2', '3'].indexOf(e.key)
       if (digit !== -1) target = PAGES[digit]?.page
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
@@ -259,6 +268,13 @@ export default function App() {
       if (e.key === 'u' && toast?.onUndo) {
         e.preventDefault()
         runToastUndo()
+        return
+      }
+      // "g" cycles the JOBS sort (like INBOX's), without opening the list.
+      if (e.key === 'g' && page === 'jobs' && jobSort) {
+        e.preventDefault()
+        const i = JOB_SORTS.findIndex((s) => s.key === jobSort)
+        setJobSort(JOB_SORTS[(i + 1) % JOB_SORTS.length].key)
         return
       }
       const arrow = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
@@ -691,7 +707,8 @@ export default function App() {
                     counts={counts}
                     view={view}
                     onView={changeView}
-                    scale={scale}
+                    sort={jobSort}
+                    onSort={setJobSort}
                     onCollapseAll={() => setCollapsed(new Set(jobs.flatMap(sectionsOf)))}
                     onExpandAll={() => setCollapsed(new Set())}
                   />

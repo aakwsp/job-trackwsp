@@ -1,3 +1,4 @@
+import * as api from '../api'
 import type { InboxRow, StatusColor } from '../types'
 
 // Display rules from design/inbox/*.dc.html.
@@ -39,24 +40,38 @@ export function sortRows(rows: InboxRow[], sort: MailSort): InboxRow[] {
   return a
 }
 
-// Remembered like the JOBS view mode (lib/view.ts): localStorage, and a
-// broken value never stops the page from rendering.
-const SORT_KEY = 'jt.inbox.sort'
+// Remembered in `settings.inbox_sort`, like JOBS' `jobs_sort` (JT-39).
+// Where it used to live: read once, carried over, then removed.
+const LEGACY_KEY = 'jt.inbox.sort'
 
-export function loadSort(): MailSort {
+/**
+ * The remembered sort. The first time (nothing in settings yet) it takes
+ * the old localStorage choice, saves it to settings and drops the old key,
+ * so localStorage isn't used again. Never rejects: 'newest' if anything
+ * fails, so the page always renders.
+ */
+export async function loadSort(): Promise<MailSort> {
   try {
-    return localStorage.getItem(SORT_KEY) === 'company' ? 'company' : 'newest'
+    const stored = await api.inboxSort()
+    if (stored) return stored
   } catch {
     return 'newest'
   }
+  let legacy: string | null = null
+  try {
+    legacy = localStorage.getItem(LEGACY_KEY)
+    localStorage.removeItem(LEGACY_KEY)
+  } catch {
+    // storage unavailable: nothing to carry over
+  }
+  const s: MailSort = legacy === 'company' ? 'company' : 'newest'
+  await saveSort(s)
+  return s
 }
 
-export function saveSort(s: MailSort) {
-  try {
-    localStorage.setItem(SORT_KEY, s)
-  } catch {
-    // not saved; it still works for this session
-  }
+export async function saveSort(s: MailSort): Promise<void> {
+  // Not saved: it still works for this session.
+  await api.setInboxSort(s).catch(() => {})
 }
 
 /** 'YYYY-MM-DD' of a stored UTC timestamp, in local time. */

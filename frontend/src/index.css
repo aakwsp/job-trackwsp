@@ -63,9 +63,8 @@
   --font-mono:  "Space Mono", monospace;
 
   /* type scale. Tailwind turns each --text-* into a font-size utility
-     (`--text-meta` → `text-meta`). All rem, so the whole UI follows the
-     root font-size that the ctrl +/- scale sets on <html>; px values in
-     the comments are at 100%. */
+     (`--text-meta` → `text-meta`). All rem (1rem = 16px, the browser
+     default); px values in the comments. */
   --text-micro:        0.625rem;   /* 10px  top strip, view tabs */
   --text-meta:         0.75rem;    /* 12px  labels, meta lines, bands, chips */
   --text-sub:          0.875rem;   /* 14px  role titles under a company */

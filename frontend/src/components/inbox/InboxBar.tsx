@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type RefObject } from 'react'
 import { field, textButton } from '../styles'
-import OptionButton from '../OptionButton'
+import SortControl from '../SortControl'
 import { useSqueeze } from '../../lib/useSqueeze'
 import type { MailSort } from '../../lib/inbox'
 import {
@@ -40,7 +40,7 @@ type Props = {
 export default function InboxBar({ searchRef, ...p }: Props) {
   const ref = useRef<HTMLDivElement>(null)
   const chips = activeInboxRows(p.filters).map(({ row, mode }) => `${row.key}:${mode}`)
-  const squeezed = useSqueeze(ref, chips.join(','))
+  const squeezed = useSqueeze(ref, `${chips.join(',')}|${p.sort}`)
   return (
     <div ref={ref} className="flex flex-nowrap items-center gap-x-4 px-6 py-3 text-meta">
       <input
@@ -70,14 +70,14 @@ export default function InboxBar({ searchRef, ...p }: Props) {
       <span className="ml-auto flex shrink-0 items-center gap-3 whitespace-nowrap">
         {/* Sort is the view switch (newest = by email, company = by
             job); keeps INBOX's underline for the active one. */}
-        <span className="flex items-center gap-1">
-          <span className="pr-0.5 text-text-dim">sort</span>
-          {(['newest', 'company'] as MailSort[]).map((s) => (
-            <OptionButton key={s} on={p.sort === s} onClick={() => p.onSort(s)}>
-              {s}
-            </OptionButton>
-          ))}
-        </span>
+        <SortControl<MailSort>
+          options={[
+            { key: 'newest', label: 'newest' },
+            { key: 'company', label: 'company' },
+          ]}
+          value={p.sort}
+          onChange={p.onSort}
+        />
         <button
           type="button"
           onClick={p.onNarrow}

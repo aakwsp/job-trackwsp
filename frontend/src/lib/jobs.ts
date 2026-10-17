@@ -1,4 +1,4 @@
-import type { FilterMode, FlagKey, Filters, Job, StatusColor, StatusKey } from '../types'
+import type { FilterMode, FlagKey, Filters, Job, JobSort, StatusColor, StatusKey } from '../types'
 
 export const CLOSING_SOON_DAYS = 7
 export const STALE_DAYS = 30
@@ -224,6 +224,15 @@ function groupPasses<K extends string>(modes: Partial<Record<K, FilterMode>>, ma
   const anyIncludes = Object.values(modes).includes('include')
   return !anyIncludes || matched.some((k) => modes[k] === 'include')
 }
+
+/** The JOBS sort words, in toolbar order (JT-39). */
+export const JOB_SORTS: { key: JobSort; label: string }[] = [
+  { key: 'deadline', label: 'deadline' },
+  { key: 'first_seen', label: 'first seen' },
+  { key: 'last_seen', label: 'last seen' },
+  { key: 'company', label: 'company' },
+  { key: 'status', label: 'status' },
+]
 
 export type HubGroup = { hub: string; jobs: Job[] }
 

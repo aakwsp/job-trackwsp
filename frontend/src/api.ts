@@ -1,17 +1,6 @@
 import { invoke } from '@tauri-apps/api/core'
-import type {
-  Application,
-  IgnoredRow,
-  InboxDetail,
-  InboxJob,
-  InboxRow,
-  Job,
-  MailStatus,
-  NewJob,
-  RouteEdit,
-  SyncCounts,
-  TimelineNode,
-} from './types'
+import type { MailSort } from './lib/inbox'
+import type { Application, IgnoredRow, InboxDetail, InboxJob, InboxRow, Job, MailStatus, NewJob, RouteEdit, SyncCounts, TimelineNode, JobSort } from './types'
 
 // Thin typed wrappers around the Tauri commands registered in
 // src-tauri/src/lib.rs. Argument keys are camelCase here: Tauri converts
@@ -19,7 +8,13 @@ import type {
 //
 // A Rust `Err(...)` rejects the promise with the error's Display string.
 
-export const listJobs = () => invoke<Job[]>('list_jobs')
+// Sorted in Rust. Passing `sort` also remembers it (`settings.jobs_sort`);
+// without it, the remembered sort is used.
+export const listJobs = (sort?: JobSort) => invoke<Job[]>('list_jobs', { sort: sort ?? null })
+export const jobsSort = () => invoke<JobSort>('jobs_sort')
+// INBOX's sort, remembered in `settings.inbox_sort`; null until saved.
+export const inboxSort = () => invoke<MailSort | null>('inbox_sort')
+export const setInboxSort = (sort: MailSort) => invoke<void>('set_inbox_sort', { sort })
 
 export const setApplied = (jobId: number, applied: boolean) =>
   invoke<void>('set_applied', { jobId, applied })
