@@ -292,6 +292,9 @@ async fn upsert(
 
         match find_existing(pool, &key, &trip, &url_norm).await? {
             Some((id, is_merge)) => {
+                // JT-38: job_cities follow the raw city text; only rebuilt
+                // when it changed.
+                let old_city: Option<String> = sqlx::query_scalar("SELECT city FROM jobs WHERE id = ?").bind(id).fetch_one(pool).await?;
                 // A req id we didn't have before upgrades the row's key in
                 // place — same rule as code.gs, applied to the local row
                 // instead of the sheet row. `first_seen` and `hidden` are
@@ -327,6 +330,11 @@ async fn upsert(
                 .bind(id)
                 .execute(pool)
                 .await?;
+
+                let new_city = none_if_empty(&p.city);
+                if old_city.as_deref() != new_city {
+                    crate::cities::rebuild_job(&mut *pool.acquire().await?, id, new_city).await?;
+                }
 
                 // Back in the sheet: `removed_at = NULL` in the UPDATE above
                 // clears a previous removal.
@@ -364,6 +372,7 @@ async fn upsert(
                 .fetch_one(pool)
                 .await?;
 
+                crate::cities::rebuild_job(&mut *pool.acquire().await?, id, none_if_empty(&p.city)).await?;
                 seen.push(id);
                 counts.inserted += 1;
             }
@@ -493,6 +502,37 @@ mod tests {
             let (k, v) = line.split_once('=')?;
             (k.trim() == key).then(|| v.trim().to_string())
         })
+    }
+
+    #[test]
+    fn job_cities_follow_the_city_text() {
+        let dir = scratch_dir();
+        let pool = tauri::async_runtime::block_on(db::connect(&dir)).expect("connect");
+        let mut p = RawPosting {
+            company: "Shopify".into(),
+            title: "SWE Intern".into(),
+            city: "Toronto".into(),
+            req_id: "R-9".into(),
+            url: "https://example.com/jobs/9".into(),
+            deadline: "".into(),
+            posting_status: "open".into(),
+            borderline: "false".into(),
+            borderline_reason: "".into(),
+            first_seen: "2026-09-01".into(),
+            last_seen: "2026-09-01".into(),
+            source: "daily".into(),
+        };
+        let cities = || -> Vec<String> {
+            tauri::async_runtime::block_on(sqlx::query_scalar("SELECT city FROM job_cities ORDER BY position").fetch_all(&pool)).unwrap()
+        };
+        tauri::async_runtime::block_on(upsert(&pool, vec![p.clone()])).unwrap();
+        assert_eq!(cities(), ["toronto"]);
+        // The sheet now lists two places (same req id, so the same row).
+        p.city = "Waterloo or Toronto, ON".into();
+        tauri::async_runtime::block_on(upsert(&pool, vec![p.clone()])).unwrap();
+        assert_eq!(cities(), ["waterloo", "toronto"]);
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

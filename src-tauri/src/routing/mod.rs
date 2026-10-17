@@ -1064,7 +1064,10 @@ pub fn redate_existing(pool: &SqlitePool, skip: &[i64]) -> Result<Vec<Redated>, 
 pub struct NewJob {
     pub company: String,
     pub title: String,
-    pub city: Option<String>,
+    /// Zero, one or several (JT-38); stored as the raw `jobs.city` text
+    /// joined with " / ", which `cities::parse` splits again.
+    #[serde(default)]
+    pub cities: Vec<String>,
     pub req_id: Option<String>,
     pub url: Option<String>,
 }
@@ -1085,7 +1088,9 @@ pub fn new_job(pool: &SqlitePool, email_id: i64, job: NewJob) -> Result<i64, Str
     if company.is_empty() || title.is_empty() {
         return Err("company and role are required".into());
     }
-    let (city, req_id, url) = (clean(&job.city), clean(&job.req_id), clean(&job.url));
+    let joined = job.cities.iter().map(|c| c.trim()).filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" / ");
+    let city = Some(joined).filter(|c| !c.is_empty());
+    let (req_id, url) = (clean(&job.req_id), clean(&job.url));
     if let Some(u) = &url {
         crate::jobs::check_url(u).map_err(|e| e.to_string())?;
     }
@@ -1117,6 +1122,7 @@ pub fn new_job(pool: &SqlitePool, email_id: i64, job: NewJob) -> Result<i64, Str
         .bind(&at[..10.min(at.len())])
         .fetch_one(&mut *tx)
         .await?;
+        crate::cities::rebuild_job(&mut tx, job_id, city.as_deref()).await?;
         let app_id: i64 = sqlx::query_scalar("INSERT INTO applications (job_id, status, applied_at) VALUES (?, 'applied', ?) RETURNING id")
             .bind(job_id)
             .bind(&at)
@@ -1696,7 +1702,7 @@ mod tests {
         let job = || NewJob {
             company: "Zeta".into(),
             title: "Platform Intern".into(),
-            city: Some("Toronto".into()),
+            cities: vec!["Waterloo".into(), " ".into(), "Toronto".into()],
             req_id: Some(" ".into()),
             url: None,
         };
@@ -1708,7 +1714,7 @@ mod tests {
                 .execute(&pool),
         )
         .unwrap();
-        let dup = NewJob { company: "ACME".into(), title: "data intern".into(), city: None, req_id: Some("R-7".into()), url: None };
+        let dup = NewJob { company: "ACME".into(), title: "data intern".into(), cities: vec![], req_id: Some("R-7".into()), url: None };
         assert!(new_job(&pool, email, dup).unwrap_err().contains("already exists"));
 
         let app = new_job(&pool, email, job()).unwrap();
@@ -1716,6 +1722,15 @@ mod tests {
             block_on(sqlx::query_as("SELECT source, first_seen, req_id FROM jobs j JOIN applications a ON a.job_id = j.id WHERE a.id = ?").bind(app).fetch_one(&pool))
                 .unwrap();
         assert_eq!((source.as_str(), first_seen.as_str(), req), ("manual", "2026-09-20", None));
+        // Several cities: one raw text, and its parsed rows.
+        let (city, parsed): (String, String) = block_on(sqlx::query_as(
+            "SELECT j.city, (SELECT group_concat(c.city, ',') FROM (SELECT city FROM job_cities WHERE job_id = j.id ORDER BY position) c)
+             FROM jobs j JOIN applications a ON a.job_id = j.id WHERE a.id = ?",
+        )
+        .bind(app)
+        .fetch_one(&pool))
+        .unwrap();
+        assert_eq!((city.as_str(), parsed.as_str()), ("Waterloo / Toronto", "waterloo,toronto"));
         // Applied on the email's date, then the interview the email is.
         assert_eq!(app_state(&pool, app), ("interview".into(), vec!["applied".into(), "interview".into()]));
         assert_eq!(applied_dates(&pool, app).0, "2026-09-20T15:00:00Z");

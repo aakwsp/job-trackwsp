@@ -54,8 +54,8 @@ export default function FilterBar({
         type="search"
         value={filters.city}
         onChange={(e) => onChange({ ...filters, city: e.target.value })}
-        placeholder="city"
-        aria-label="city"
+        placeholder="hub / city"
+        aria-label="hub or city"
         className={`${field} w-36 ${box}`}
       />
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import * as api from './api'
 import { listen } from '@tauri-apps/api/event'
 import type { Application, Filters, Job } from './types'
-import { DEFAULT_FILTERS, NO_CITY, groupByCity, matchesFilters } from './lib/jobs'
+import { DEFAULT_FILTERS, groupByHub, matchesFilters, sectionsOf } from './lib/jobs'
 import { loadFilters, rowCounts, saveFilters } from './lib/filters'
 import { loadView, saveView, type ViewMode } from './lib/view'
 import { useUiScale } from './lib/useUiScale'
@@ -62,7 +62,7 @@ export default function App() {
   const [reloadKey, setReloadKey] = useState(0)
   // Lazy initializer, like `view` below: last session's filters, read once.
   const [filters, setFilters] = useState<Filters>(loadFilters)
-  // Collapsed city names. A Set, replaced (never mutated) on every change so
+  // Collapsed sections (hub names). A Set, replaced (never mutated) on every change so
   // React sees a new value.
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   // Passing a function (not `loadView()`) makes it a lazy initializer:
@@ -145,7 +145,7 @@ export default function App() {
     () => jobs.filter((j) => matchesFilters(j, filters)),
     [jobs, filters],
   )
-  const groups = useMemo(() => groupByCity(visible), [visible])
+  const groups = useMemo(() => groupByHub(visible), [visible])
 
   // Resolve the open record against the live lists. The application is
   // looked up by its own id first, then by posting: that's how one opened
@@ -692,7 +692,7 @@ export default function App() {
                     view={view}
                     onView={changeView}
                     scale={scale}
-                    onCollapseAll={() => setCollapsed(new Set(jobs.map((j) => j.city ?? NO_CITY)))}
+                    onCollapseAll={() => setCollapsed(new Set(jobs.flatMap(sectionsOf)))}
                     onExpandAll={() => setCollapsed(new Set())}
                   />
                   {noticeLine}
@@ -732,11 +732,11 @@ export default function App() {
                 <div key={view} className="fade-in">
                   {groups.map((g) => (
                     <CityGroup
-                      key={g.city}
-                      city={g.city}
+                      key={g.hub}
+                      hub={g.hub}
                       jobs={g.jobs}
                       view={view}
-                      collapsed={collapsed.has(g.city)}
+                      collapsed={collapsed.has(g.hub)}
                       onToggle={toggleCity}
                       onSelect={(job) => setRecord({ jobId: job.id, appId: null, from: 'jobs', tab: 'posting' })}
                       onOpen={open}

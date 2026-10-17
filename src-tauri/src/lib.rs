@@ -1,4 +1,5 @@
 mod applications;
+mod cities;
 mod db;
 mod extract;
 mod gmail;

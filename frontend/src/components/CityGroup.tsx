@@ -4,18 +4,20 @@ import JobCard from './JobCard'
 import JobLine from './JobLine'
 import { useReveal } from '../lib/reveal'
 
+// One JOBS section: a hub (JT-38). A posting in several hubs is in each
+// of their sections; its card here notes the others ("+ kw").
 type Props = {
-  city: string
+  hub: string
   jobs: Job[]
   view: ViewMode
   collapsed: boolean
-  onToggle: (city: string) => void
+  onToggle: (hub: string) => void
   onSelect: (job: Job) => void
   onOpen: (job: Job) => void
 }
 
 export default function CityGroup({
-  city,
+  hub,
   jobs,
   view,
   collapsed,
@@ -26,7 +28,7 @@ export default function CityGroup({
   // The band rises in like the cards and rows. The first one on screen rides
   // in just after the hero and toolbar (see PAGE_ENTRY_DELAY_MS in
   // lib/reveal).
-  const { ref: revealRef, className: revealClass } = useReveal(`band:${city}`)
+  const { ref: revealRef, className: revealClass } = useReveal(`band:${hub}`)
   return (
     <section>
       {/* The band is the collapse control: a <button> so it gets keyboard
@@ -39,13 +41,13 @@ export default function CityGroup({
           cards (whose stripe is a positioned ::before). */}
       <button
         type="button"
-        onClick={() => onToggle(city)}
+        onClick={() => onToggle(hub)}
         aria-expanded={!collapsed}
         ref={revealRef}
         className={`band rise ${revealClass} sticky top-(--toolbar-h) z-10 flex w-full cursor-pointer items-center justify-between hover:text-text`}
       >
         <span>
-          {collapsed ? '+ ' : '- '}// {city.toLowerCase()}
+          {collapsed ? '+ ' : '- '}// {hub}
         </span>
         <span className="text-text-dim">{jobs.length}</span>
       </button>
@@ -58,7 +60,7 @@ export default function CityGroup({
           {view === 'line' ? (
             <div>
               {jobs.map((job) => (
-                <JobLine key={job.id} job={job} onSelect={onSelect} onOpen={onOpen} />
+                <JobLine key={job.id} job={job} hub={hub} onSelect={onSelect} onOpen={onOpen} />
               ))}
             </div>
           ) : (
@@ -67,6 +69,7 @@ export default function CityGroup({
                 <JobCard
                   key={job.id}
                   job={job}
+                  hub={hub}
                   compact={view === 'compact'}
                   onSelect={onSelect}
                   onOpen={onOpen}
