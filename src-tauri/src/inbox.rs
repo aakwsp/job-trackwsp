@@ -136,7 +136,9 @@ pub struct AppRef {
     pub title: String,
     pub status: String,
     pub applied_at: Option<String>,
-    /// The posting's city (None without a posting).
+    /// The posting's cities as INBOX shows them, "waterloo / toronto"
+    /// (JT-38, from `job_cities`; the raw text if it has none). None
+    /// without a posting.
     pub city: Option<String>,
 }
 
@@ -285,7 +287,8 @@ pub fn detail(pool: &SqlitePool, email_id: i64) -> Result<Option<Detail>, sqlx::
         block_on(
             sqlx::query_as(
                 "SELECT a.id, COALESCE(j.company, a.company, '') AS company,
-                        COALESCE(j.title, a.title, '') AS title, a.status, a.applied_at, j.city
+                        COALESCE(j.title, a.title, '') AS title, a.status, a.applied_at,
+                        COALESCE((SELECT group_concat(c.city, ' / ') FROM (SELECT city FROM job_cities WHERE job_id = j.id ORDER BY position) c), j.city) AS city
                  FROM applications a LEFT JOIN jobs j ON j.id = a.job_id
                  ORDER BY company, title",
             )

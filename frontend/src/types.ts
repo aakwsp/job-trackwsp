@@ -20,6 +20,11 @@ export type Job = {
   applied_at: string | null // full ISO timestamp, UTC
   app_status: AppStatus | null // the application's status; null when not applied
   notes: string | null
+  // JT-38: the places `city` names (lowercase, accents folded, in the
+  // posting's order) and their hubs: the JOBS sections it appears in.
+  // `city` stays the raw text from the sheet.
+  cities: string[]
+  hubs: string[]
 }
 
 // Mirrors `sync::SyncCounts` in src-tauri/src/sync/mod.rs.
@@ -50,7 +55,7 @@ export type FilterMode = 'include' | 'exclude'
 // all) of K.
 export type Filters = {
   query: string
-  city: string // substring of the city, '' = any
+  city: string // substring of any of its cities or hubs, '' = any
   statuses: Partial<Record<StatusKey, FilterMode>>
   flags: Partial<Record<FlagKey, FilterMode>>
 }
@@ -130,7 +135,8 @@ export type IgnoredRow = {
 export type AppRef = { id: number; company: string; title: string; status: string; applied_at: string | null; city: string | null }
 
 // [ + new job ] in INBOX (routing::NewJob).
-export type NewJob = { company: string; title: string; city?: string; req_id?: string; url?: string }
+// `cities`: zero, one or several; Rust joins them into `jobs.city` with " / ".
+export type NewJob = { company: string; title: string; cities: string[]; req_id?: string; url?: string }
 
 export type InboxDetail = {
   email: {

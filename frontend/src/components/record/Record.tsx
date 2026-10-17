@@ -1,7 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode, type TransitionEvent } from 'react'
 import type { Application, Job, StatusColor, TimelineNode } from '../../types'
 import * as api from '../../api'
-import { activeFlags, labelsFor, statusInfo } from '../../lib/jobs'
+import { activeFlags, cityText, labelsFor, sectionsOf, statusInfo } from '../../lib/jobs'
 import { nextStage, stageColor } from '../../lib/applications'
 import { prefersReducedMotion } from '../../lib/motion'
 import { TABS, tabForKey, type RecordFrom, type Tab } from '../../lib/record'
@@ -283,11 +283,11 @@ export default function Record({
 
   const recordId = `// record ${job?.req_id ?? company.toLowerCase()}`
 
-  // Where it was opened from: "jobs / toronto / robinhood" or
+  // Where it was opened from: "jobs / gta / robinhood" (its first hub) or
   // "pipeline / interview / robinhood".
   const crumb =
     from === 'jobs'
-      ? `jobs / ${job?.city ?? 'unknown'} / ${company}`
+      ? `jobs / ${job ? sectionsOf(job)[0] : 'unknown'} / ${company}`
       : `pipeline / ${app?.status ?? 'not applied'} / ${company}`
 
   const meta = (
@@ -295,7 +295,7 @@ export default function Record({
       <p className="text-meta text-text-muted lowercase">
         {job ? (
           <>
-            {job.city ?? '—'} <span className="text-text-dim">·</span> {job.deadline ? `due ${job.deadline}` : 'rolling'}
+            {cityText(job)} <span className="text-text-dim">·</span> {job.deadline ? `due ${job.deadline}` : 'rolling'}
           </>
         ) : (
           'added by hand'

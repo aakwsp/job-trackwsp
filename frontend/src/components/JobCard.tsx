@@ -7,6 +7,8 @@ import StatusMarks from './StatusMarks'
 
 type Props = {
   job: Job
+  // The section it's drawn in; its other hubs get the "+ kw" marker.
+  hub: string
   compact: boolean
   onSelect: (job: Job) => void
   onOpen: (job: Job) => void
@@ -14,10 +16,11 @@ type Props = {
 
 // DEFAULT and COMPACT views. DEFAULT gets more padding and spacing, plus a
 // hairline above the meta line.
-export default function JobCard({ job, compact, onSelect, onOpen }: Props) {
+export default function JobCard({ job, hub, compact, onSelect, onOpen }: Props) {
   // Rises in the first time it scrolls into view (lib/reveal.tsx). Keyed by
-  // job id, so DEFAULT and COMPACT share the "already revealed" memory.
-  const { ref: revealRef, className: revealClass } = useReveal(`job:${job.id}`)
+  // job id and section (a posting can be in two), so DEFAULT and COMPACT
+  // share the "already revealed" memory.
+  const { ref: revealRef, className: revealClass } = useReveal(`job:${job.id}:${hub}`)
   return (
     // `.card` (index.css) owns the shared hairlines, the 3px stripe picked
     // by `data-color`, and the dimming for `data-applied`. `flex-col` +
@@ -57,7 +60,7 @@ export default function JobCard({ job, compact, onSelect, onOpen }: Props) {
       <div
         className={`mt-auto text-meta text-text-dim ${compact ? 'pt-2' : 'border-t border-rule pt-3'}`}
       >
-        <MetaLine job={job} short={compact} />
+        <MetaLine job={job} short={compact} others={job.hubs.filter((h) => h !== hub)} />
       </div>
     </article>
   )

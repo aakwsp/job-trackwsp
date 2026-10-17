@@ -104,7 +104,8 @@ export default function InboxDetailPane({ detail, act, notify, onResolved, large
       v: {
         company: edits.company ?? x?.company ?? '',
         title: edits.role ?? x?.role ?? '',
-        city: '',
+        // One empty box to start; [ + city ] adds more, none is fine.
+        cities: [''],
         req_id: edits.req_id ?? x?.req_id ?? '',
         url: '',
       },
@@ -492,17 +493,19 @@ function MatchRow({ a, n, on, onPick }: { a: AppRef; n: number; on: boolean; onP
 }
 
 // [ + new job ]: the inline form, styled like the // extracted edit fields.
-// Company and role are required; the rest optional.
+// Company and role are required; the rest optional. Cities: zero, one or
+// several boxes (JT-38), saved as one "waterloo / toronto" text.
+type TextKey = 'company' | 'title' | 'req_id' | 'url'
 function NewJobForm({ value, onChange, onSave, onCancel }: { value: NewJob; onChange: (v: NewJob) => void; onSave: () => void; onCancel: () => void }) {
-  const fields: { k: keyof NewJob; label: string; ph: string }[] = [
+  const fields: { k: TextKey | 'cities'; label: string; ph: string }[] = [
     { k: 'company', label: 'company', ph: 'required' },
     { k: 'title', label: 'role', ph: 'required' },
-    // Free text; may name several ("Waterloo or Toronto"). Splitting
-    // those into cities is JT-38.
-    { k: 'city', label: 'city', ph: 'optional, e.g. waterloo or toronto' },
+    { k: 'cities', label: 'cities', ph: 'optional, e.g. waterloo' },
     { k: 'req_id', label: 'req id', ph: 'optional' },
     { k: 'url', label: 'url', ph: 'optional, https://…' },
   ]
+  const input = 'h-8 w-full border border-rule-strong bg-bg px-2.5 text-meta text-text outline-none placeholder:text-text-dim focus:border-text'
+  const setCity = (i: number, v: string) => onChange({ ...value, cities: value.cities.map((c, j) => (j === i ? v : c)) })
   const ready = value.company.trim() !== '' && value.title.trim() !== ''
   return (
     // A real <form>: Enter in any field saves (onSubmit), for free.
@@ -528,16 +531,53 @@ function NewJobForm({ value, onChange, onSave, onCancel }: { value: NewJob; onCh
               <label htmlFor={`new-job-${f.k}`}>{f.label}</label>
             </dt>
             <dd className="m-0 min-w-0 border-b border-rule py-2">
-              <input
-                id={`new-job-${f.k}`}
-                type="text"
-                value={value[f.k] ?? ''}
-                placeholder={f.ph}
-                autoComplete="off"
-                spellCheck={false}
-                onChange={(e) => onChange({ ...value, [f.k]: e.target.value })}
-                className="h-8 w-full border border-rule-strong bg-bg px-2.5 text-meta text-text outline-none placeholder:text-text-dim focus:border-text"
-              />
+              {f.k === 'cities' ? (
+                // One box per city; [ × ] drops one (all of them is fine:
+                // no city), [ + city ] adds another.
+                <div className="flex flex-col gap-1.5">
+                  {value.cities.map((c, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        id={i === 0 ? 'new-job-cities' : undefined}
+                        type="text"
+                        aria-label={`city ${i + 1}`}
+                        value={c}
+                        placeholder={i === 0 ? f.ph : 'another city'}
+                        autoComplete="off"
+                        spellCheck={false}
+                        onChange={(e) => setCity(i, e.target.value)}
+                        className={input}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => onChange({ ...value, cities: value.cities.filter((_, j) => j !== i) })}
+                        aria-label={`remove city ${i + 1}`}
+                        className="shrink-0 cursor-pointer text-text-dim hover:text-text"
+                      >
+                        [ × ]
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => onChange({ ...value, cities: [...value.cities, ''] })}
+                    className="self-start cursor-pointer text-text-muted hover:text-text"
+                  >
+                    [ + city ]
+                  </button>
+                </div>
+              ) : (
+                <input
+                  id={`new-job-${f.k}`}
+                  type="text"
+                  value={value[f.k] ?? ''}
+                  placeholder={f.ph}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onChange={(e) => onChange({ ...value, [f.k]: e.target.value })}
+                  className={input}
+                />
+              )}
             </dd>
           </div>
         ))}

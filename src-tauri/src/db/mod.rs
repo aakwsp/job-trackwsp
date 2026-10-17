@@ -40,6 +40,9 @@ pub async fn connect(app_data_dir: &Path) -> sqlx::Result<SqlitePool> {
 
     // Path is relative to CARGO_MANIFEST_DIR (src-tauri/), not to this file.
     sqlx::migrate!("./migrations").run(&pool).await?;
+    // JT-38: job_cities is filled by the Rust parser, so after migrations
+    // (a no-op unless the parser version changed or a job lacks rows).
+    crate::cities::ensure(&pool).await?;
 
     Ok(pool)
 }
@@ -85,6 +88,7 @@ mod tests {
                 "email_matches",
                 "emails",
                 "extractions",
+                "job_cities",
                 "job_notes",
                 "jobs",
                 "llm_match_hints",

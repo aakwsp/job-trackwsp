@@ -37,6 +37,13 @@ pub struct JobRow {
     pub app_status: Option<String>,
     /// From `applications.notes` when applied, else `job_notes.body`.
     pub notes: Option<String>,
+    /// The places `city` names (JT-38, `job_cities`), in the posting's
+    /// order: what a card shows.
+    #[sqlx(skip)]
+    pub cities: Vec<String>,
+    /// Their hubs (`cities::hubs_of`): the JOBS sections it appears in.
+    #[sqlx(skip)]
+    pub hubs: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -116,6 +123,16 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<JobRow>, JobsError> {
     )
     .fetch_all(pool)
     .await?;
+    let mut rows = rows;
+    let pairs: Vec<(i64, String)> = sqlx::query_as("SELECT job_id, city FROM job_cities ORDER BY job_id, position").fetch_all(pool).await?;
+    let mut by_job: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    for (id, city) in pairs {
+        by_job.entry(id).or_default().push(city);
+    }
+    for r in &mut rows {
+        r.cities = by_job.remove(&r.id).unwrap_or_default();
+        r.hubs = crate::cities::hubs_of(&r.cities);
+    }
     Ok(rows)
 }
 

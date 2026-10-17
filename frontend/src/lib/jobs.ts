@@ -207,9 +207,10 @@ export function flagSlots(job: Job): { flag: Flag; on: boolean }[] {
  */
 export function matchesFilters(job: Job, f: Filters, ignore?: 'statuses' | 'flags'): boolean {
   const q = f.query.trim().toLowerCase()
-  if (q && !`${job.company} ${job.title}`.toLowerCase().includes(q)) return false
+  if (q && !`${job.company} ${job.title} ${job.cities.join(' ')}`.toLowerCase().includes(q)) return false
+  // The hub / city box: any of its cities or hubs ("gta" finds markham).
   const c = f.city.trim().toLowerCase()
-  if (c && !(job.city ?? '').toLowerCase().includes(c)) return false
+  if (c && ![...job.cities, ...job.hubs, (job.city ?? '').toLowerCase()].some((x) => x.includes(c))) return false
   if (ignore !== 'statuses' && !groupPasses(f.statuses, [statusOf(job)])) return false
   if (ignore !== 'flags' && !groupPasses(f.flags, activeFlags(job).map((fl) => fl.key))) return false
   return true
@@ -224,23 +225,36 @@ function groupPasses<K extends string>(modes: Partial<Record<K, FilterMode>>, ma
   return !anyIncludes || matched.some((k) => modes[k] === 'include')
 }
 
-export type CityGroup = { city: string; jobs: Job[] }
+export type HubGroup = { hub: string; jobs: Job[] }
 
 export const NO_CITY = 'unknown'
 
+/** The sections a posting appears in: its hubs, or "unknown" with none. */
+export function sectionsOf(job: Job): string[] {
+  return job.hubs.length > 0 ? job.hubs : [NO_CITY]
+}
+
 /**
- * Buckets jobs by city, keeping the incoming (deadline, last_seen) order
- * inside each bucket. Biggest cities first so toronto leads, ties by name.
+ * Buckets jobs by hub (JT-38), keeping the incoming (deadline, last_seen)
+ * order inside each bucket. A posting in several hubs goes in each of
+ * them; cities in one hub put it there once. Biggest hubs first so gta
+ * leads, ties by name. A bucket's length counts postings, never copies.
  */
-export function groupByCity(jobs: Job[]): CityGroup[] {
+export function groupByHub(jobs: Job[]): HubGroup[] {
   const map = new Map<string, Job[]>()
   for (const job of jobs) {
-    const city = job.city ?? NO_CITY
-    const bucket = map.get(city)
-    if (bucket) bucket.push(job)
-    else map.set(city, [job])
+    for (const hub of sectionsOf(job)) {
+      const bucket = map.get(hub)
+      if (bucket) bucket.push(job)
+      else map.set(hub, [job])
+    }
   }
   return [...map]
-    .map(([city, jobs]) => ({ city, jobs }))
-    .sort((a, b) => b.jobs.length - a.jobs.length || a.city.localeCompare(b.city))
+    .map(([hub, jobs]) => ({ hub, jobs }))
+    .sort((a, b) => b.jobs.length - a.jobs.length || a.hub.localeCompare(b.hub))
+}
+
+/** "waterloo / toronto": a posting's real cities, for cards and lines. */
+export function cityText(job: Job): string {
+  return job.cities.length > 0 ? job.cities.join(' / ') : (job.city?.toLowerCase() ?? '—')
 }

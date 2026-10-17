@@ -1,22 +1,25 @@
 import type { Job } from '../types'
-import { LINE_TITLE_MAX, clipTitle, dateText, stripeColor } from '../lib/jobs'
-import { Labels } from './MetaLine'
+import { LINE_TITLE_MAX, cityText, clipTitle, dateText, stripeColor } from '../lib/jobs'
+import { Labels, OtherHubs } from './MetaLine'
 import { clickable } from './clickable'
 import { useReveal } from '../lib/reveal'
 import StatusMarks from './StatusMarks'
 
 type Props = {
   job: Job
+  // The section it's drawn in; its other hubs get the "+ kw" marker.
+  hub: string
   onSelect: (job: Job) => void
   onOpen: (job: Job) => void
 }
 
 // LINE view: one posting per row. Same `.card` class as the card views, so
 // the stripe, hover highlight and applied dimming match.
-export default function JobLine({ job, onSelect, onOpen }: Props) {
+export default function JobLine({ job, hub, onSelect, onOpen }: Props) {
   // Rises in the first time it nears the screen (lib/reveal.ts). Same id as
   // JobCard, so a posting already revealed as a card doesn't replay as a row.
-  const { ref: revealRef, className: revealClass } = useReveal(`job:${job.id}`)
+  const { ref: revealRef, className: revealClass } = useReveal(`job:${job.id}:${hub}`)
+  const others = job.hubs.filter((h) => h !== hub)
   return (
     <div
       {...clickable(() => onSelect(job))}
@@ -42,19 +45,22 @@ export default function JobLine({ job, onSelect, onOpen }: Props) {
           and the start of the labels sit at the same x on every row. Widths
           are in `ch` (one character's width): Space Mono is monospaced, so a
           `ch` is exact, and it scales with the text.
-          - city: 12ch, the longest city in the data ("cole harbour").
+          - city: 12ch, the longest city in the data ("cole harbour");
+            several cities ("waterloo / toronto") are cut, full on hover.
+            The "+ kw" marker for other hubs leads the labels column.
           - date: 10ch, "YYYY-MM-DD"; "rolling" is shorter.
           - labels: room for the widest combination — "rejected",
             "30+ days", "borderline" and "applied" (33ch of text) plus each label's
             padding and border and the gaps between them. A new flag in
             FLAGS would need this widened. */}
       <span className="flex shrink-0 items-center text-meta text-text-dim">
-        <span className="w-[12ch] truncate text-right" title={job.city ?? undefined}>
-          {job.city?.toLowerCase() ?? '—'}
+        <span className="w-[12ch] truncate text-right" title={cityText(job)}>
+          {cityText(job)}
         </span>
         <span className="w-[3ch] text-center">·</span>
         <span className="w-[10ch]">{dateText(job)}</span>
         <span className="ml-4 flex w-[43ch] gap-2">
+          {others.length > 0 && <OtherHubs hubs={others} />}
           <Labels job={job} />
         </span>
       </span>

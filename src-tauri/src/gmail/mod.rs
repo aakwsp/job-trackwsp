@@ -577,7 +577,11 @@ mod tests {
         let err = save_connection(st.store.as_ref(), &pool, "jobs@example.com", "refresh-1").unwrap_err();
         assert!(matches!(err, GmailError::Keyring(_)));
         // Not connected, and the token went nowhere else: no address saved.
-        let rows: i64 = block_on(sqlx::query_scalar("SELECT COUNT(*) FROM settings").fetch_one(&pool)).unwrap();
+        // (`cities_parser_version` is written on open, nothing to do with Gmail.)
+        let rows: i64 = block_on(
+            sqlx::query_scalar("SELECT COUNT(*) FROM settings WHERE key != ?").bind(crate::cities::VERSION_KEY).fetch_one(&pool),
+        )
+        .unwrap();
         assert_eq!(rows, 0);
 
         drop(pool);

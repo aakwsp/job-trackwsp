@@ -69,6 +69,23 @@ insert a new row.
   (`routing::new_job`): never marked removed and not counted by the
   removal guard; if the sheet later has the same posting, the sync merges
   into it like any other row.
+- `job_cities` (JT-38, `src-tauri/src/cities.rs`) — the places a posting's
+  `city` names, one row each with its `position`. `jobs.city` stays the
+  raw text (it's part of `job_key`, so sync matching never changes).
+  `cities::parse`: split on " or " / " and " / "/" / "&" / ";", fold case
+  and accents (Montréal = montreal), strip province / state / country
+  parts, then split on every remaining comma; "remote" anywhere is the
+  place remote; work modes (hybrid, on-site) are dropped; nothing else is
+  ever dropped ("canada" alone stays canada). Rows are written by Rust,
+  never SQL: the sync rebuilds a job's rows on insert or when its city
+  text changes, [ + new job ] (whose cities are joined with " / ")
+  likewise, and `cities::ensure` on open rebuilds everything in one
+  transaction only when `settings.cities_parser_version` differs from
+  `CITIES_PARSER_VERSION` or a job with a city has no rows. **Bump that
+  constant whenever the parser rules change.** Hubs (`cities::HUBS`: gta,
+  kw, montreal, hamilton, ottawa, vancouver, edmonton, halifax) are applied
+  at read time (`jobs::list` returns `cities` and `hubs`), never stored,
+  so JT-33 can make them editable; a city in no hub is its own section.
 - `applications` — the user's applications. **Never** written by the sync.
   `job_id` is nullable, since the user can apply to things the scheduler never
   found. `status` is stored and recomputed whenever an event is written.
@@ -208,8 +225,14 @@ lowercase, hairline dividers, zero border radius anywhere, no shadows.
 - Status shows as a 3px left edge on a row: pink = closing soon, blue =
   borderline, green = applied, grey (`--text-dim`) = past due and not
   applied. A rejected application keeps green and gets a grey flag square.
-- Section headers read `// toronto, on` in 10px uppercase mono, with a muted
-  count on the right.
+- Section headers read `// gta` in 10px uppercase mono, with a muted
+  count on the right. JOBS sections are hubs (JT-38): a card still shows
+  its real cities ("markham", "waterloo / toronto"). A posting in several
+  hubs appears in each, with a quiet "+ kw" after its cities naming the
+  others; cities all in one hub put it there once. Every copy is the same
+  job object, so applying from one updates all; the hero and section
+  counts count postings, not copies. The hub / city box and search match
+  any of a posting's cities and hubs.
 - The list must stay **dense**: there are 230+ postings, so rows, not cards.
   Cards are only for a short "closing soon" strip.
 
